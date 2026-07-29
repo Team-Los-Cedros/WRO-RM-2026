@@ -606,7 +606,8 @@ void loop() {
   // Avanzar siguiendo la línea por 2.5 segundos a velocidad 70
   //seguirLineaTiempo(2.5, 60);
   
-  
+  /*
+  dos casas amarillas
   avanzar(580, 90, 3.0);
   
   girarIzquierdaGyro(80.0, 50.0);
@@ -633,14 +634,34 @@ void loop() {
  avanzar(400, 65, 2.0);
  retroceder(250, 30, 3.5);
   detener(2.0);
+*/
 
-  /*cerrarGarra();
+      /*cerrarGarra();
   recolectar(2);
    retroceder(600, 40, 1.0);
   girarIzquierdaGyro(77.0, 50.0);
   avanzar(400, 80, 2.5);
    girarIzquierdaGyro(80.0, 50.0);
  avanzar(2000, 80, 2.5);*/
+
+
+  girarIzquierdaGyro(87.0, 50.0);
+  avanzar(150, 80, 2.5);
+  girarDerechaGyro(87.0, 50.0);
+ 
+  avanzar(750, 80, 6.5);
+  bajar_pala();
+  retroceder(550, 25, 4.5);
+  avanzar(100, 85, 2.5);
+
+  girarDerechaGyro(87.0, 50.0);
+  avanzar(750, 75, 4.5);
+  girarIzquierdaGyro(87.0, 50.0);
+
+  avanzar(650, 80, 4.5);
+  girarIzquierdaGyro(87.0, 50.0);
+  avanzar(1000, 55, 7.5);
+  detener(2.0);
 
   // Bucle infinito para que no repita la rutina en la competencia
   while(1) {
