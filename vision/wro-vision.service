@@ -1,0 +1,17 @@
+[Unit]
+Description=Vision WRO RoboMission (Raspberry Pi -> MegaPi)
+After=multi-user.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/vision
+ExecStart=/usr/bin/python3 /home/pi/vision/vision_server.py
+Restart=always
+RestartSec=3
+# Si la camara o la MegaPi tardan en enumerarse tras el arranque, el Restart
+# se encarga. Nice negativo para que el bucle de vision no lo desplace nada.
+Nice=-5
+
+[Install]
+WantedBy=multi-user.target
