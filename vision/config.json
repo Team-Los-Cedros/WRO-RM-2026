@@ -1,0 +1,72 @@
+{
+  "camara": {
+    "indice": 0,
+    "ancho": 320,
+    "alto": 240,
+    "fps": 30,
+    "fourcc": "MJPG",
+    "buffers": 3,
+    "voltear_180": false,
+    "roi_y": [0.30, 1.00],
+    "auto_exposicion": false,
+    "exposicion_absoluta": 150,
+    "auto_balance_blancos": false,
+    "temperatura_color": 4500,
+    "frecuencia_red_hz": 60,
+    "ganancia": 0,
+    "brillo": null,
+    "contraste": null,
+    "saturacion": null,
+
+    "_nota_fps": "Medido en esta Pi 3B: la camara entrega 20 fps reales. NO pongas buffers en 1: el driver descarta un frame de cada dos y bajas a 10 fps.",
+    "_nota_roi": "roi_y recorta la franja superior de la imagen. Con la camara en lo alto del robot mirando ligeramente hacia abajo, el objeto siempre cae en la mitad inferior; recortar ahorra CPU y evita detectar cosas fuera de la pista."
+  },
+
+  "serial": {
+    "habilitado": true,
+    "puerto": "/dev/ttyUSB0",
+    "baudios": 115200,
+    "espera_reset_s": 2.5,
+    "evitar_reset_dtr": false,
+    "hz_envio": 20
+  },
+
+  "geometria": {
+    "_comentario": "cx_garra: columna en pixeles (0..ancho-1) donde queda el centro de la garra. tabla_distancia: pares [y_base_px, distancia_mm] medidos con el objeto a distancias conocidas. AMBOS HAY QUE CALIBRARLOS con calibrar_web.py; los valores de aqui son solo un punto de partida.",
+    "cx_garra": 160,
+    "tabla_distancia": [
+      [230, 60],
+      [200, 100],
+      [175, 150],
+      [155, 220],
+      [140, 300],
+      [128, 420]
+    ]
+  },
+
+  "deteccion": {
+    "area_min_px": 120,
+    "kernel_morfologia": 3,
+    "relacion_aspecto_max": 4.0,
+    "alto_min_px": 8,
+    "color_inicial": "ROJO"
+  },
+
+  "colores": {
+    "_comentario": "Rangos [Hmin,Smin,Vmin,Hmax,Smax,Vmax] en HSV de OpenCV (H:0-179). El rojo cruza el 0, por eso lleva dos rangos.",
+    "ROJO":     [[0, 120, 70, 10, 255, 255], [168, 120, 70, 179, 255, 255]],
+    "VERDE":    [[38, 80, 60, 85, 255, 255]],
+    "AZUL":     [[95, 110, 60, 128, 255, 255]],
+    "AMARILLO": [[20, 110, 110, 34, 255, 255]],
+    "NEGRO":    [[0, 0, 0, 179, 110, 55]]
+  },
+
+  "reglas_color": {
+    "_comentario": "Ajustes que solo aplican a ciertos colores. El negro es el caso dificil: comparte HSV con las sombras y con las lineas negras de la pista, asi que se le exige mas area y mas altura de caja para no confundirlo con una linea del suelo.",
+    "NEGRO": {
+      "area_min_px": 400,
+      "alto_min_px": 18,
+      "relacion_aspecto_max": 2.0
+    }
+  }
+}
