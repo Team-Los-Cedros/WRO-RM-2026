@@ -274,7 +274,9 @@ def main():
 
     cfg = cargar_config(args.config)
     estado["cfg"] = cfg
-    estado["color"] = cfg["deteccion"].get("color_inicial", colores_disponibles(cfg)[0])
+    colores = colores_disponibles(cfg)
+    color_ini = cfg["deteccion"].get("color_inicial")
+    estado["color"] = color_ini if color_ini in colores else colores[0]
     estado["detector"] = Detector(cfg)
 
     threading.Thread(target=bucle_captura, args=(cfg, args), daemon=True).start()

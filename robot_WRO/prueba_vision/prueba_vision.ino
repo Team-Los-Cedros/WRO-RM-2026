@@ -465,6 +465,10 @@ void bajarPala() {
   _delay(0.75);
 }
 
+void bajar_pala() {
+  bajarPala();
+}
+
 void recolectar(int modo) {
   if (modo == 1) miServo.write(PALA_MODO_1);
   else if (modo == 2) miServo.write(PALA_TRANSPORTE);
@@ -854,6 +858,9 @@ void loop() {
   while (digitalRead(BOTON_PIN) == HIGH) _loop();
   while (digitalRead(BOTON_PIN) == LOW) _loop();
   _delay(0.45);
+
+  bajarPala();  // Mantener la pala abajo para no obstruir la cámara al buscar artefactos
+  abrirGarra(); // Asegurar garra abierta para la visión
 
   rutinaIniciada = true;
   inicioRutinaMs = millis();
