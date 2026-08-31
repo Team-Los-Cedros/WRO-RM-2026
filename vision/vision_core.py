@@ -102,11 +102,12 @@ class Camara:
         self.cap.set(cv2.CAP_PROP_FPS, self.cfg.get("fps", 30))
         self.cap.set(cv2.CAP_PROP_BUFFERSIZE, self.cfg.get("buffers", 3))
 
-        self._aplicar_controles_v4l2()
-
-        # Descartar los primeros frames: suelen salir negros o mal expuestos.
-        for _ in range(5):
+        # Descartar los primeros frames para estabilizar el sensor y evitar resets de V4L2
+        for _ in range(3):
             self.cap.read()
+
+        # Aplicar controles V4L2 despues de que el driver inicialice el stream
+        self._aplicar_controles_v4l2()
 
         self._corriendo = True
         self._hilo = threading.Thread(target=self._bucle_captura, daemon=True)
@@ -122,64 +123,180 @@ class Camara:
 
     def _bucle_captura(self):
         fallos = 0
-        while self._corriendo:
-            ok, frame = self.cap.read()
-            if not ok:
-                fallos += 1
-                if fallos > 100:
-                    time.sleep(0.1)
-                continue
-            fallos = 0
-            if self.voltear:
-                frame = cv2.rotate(frame, cv2.ROTATE_180)
-            with self._lock:
-                self._frame = frame
-                self._seq += 1
+        try:
+            while self._corriendo:
+                if self.cap is None or not self.cap.isOpened():
+                    break
+                ok, frame = self.cap.read()
+                if not self._corriendo:
+                    break
+                if not ok:
+                    fallos += 1
+                    if fallos > 100:
+                        time.sleep(0.1)
+                    continue
+                fallos = 0
+                if self.voltear:
+                    frame = cv2.rotate(frame, cv2.ROTATE_180)
+                with self._lock:
+                    self._frame = frame
+                    self._seq += 1
+        except Exception:
+            pass
+        finally:
+            if self.cap is not None:
+                try:
+                    self.cap.release()
+                except Exception:
+                    pass
+                self.cap = None
 
     def _aplicar_controles_v4l2(self):
         c = self.cfg
         dev = "/dev/video%s" % self.indice
         controles = []
 
-        if c.get("auto_exposicion") is False:
+        if c.get("auto_exposicion") is True:
+            controles.append("auto_exposure=3")
+        elif c.get("auto_exposicion") is False:
             # 1 = manual, 3 = aperture priority (automatico) en UVC
             controles.append("auto_exposure=1")
             if c.get("exposicion_absoluta") is not None:
                 controles.append("exposure_time_absolute=%d" % c["exposicion_absoluta"])
-        if c.get("auto_balance_blancos") is False:
+
+        if c.get("auto_balance_blancos") is True:
+            controles.append("white_balance_automatic=1")
+        elif c.get("auto_balance_blancos") is False:
             controles.append("white_balance_automatic=0")
             if c.get("temperatura_color") is not None:
                 controles.append("white_balance_temperature=%d" % c["temperatura_color"])
+
         for nombre_cfg, nombre_v4l2 in (("brillo", "brightness"),
                                         ("contraste", "contrast"),
                                         ("saturacion", "saturation"),
-                                        ("ganancia", "gain")):
+                                        ("ganancia", "gain"),
+                                        ("gamma", "gamma"),
+                                        ("nitidez", "sharpness"),
+                                        ("sharpness", "sharpness"),
+                                        ("compensacion_contraluz", "backlight_compensation")):
             if c.get(nombre_cfg) is not None:
-                controles.append("%s=%d" % (nombre_v4l2, c[nombre_cfg]))
+                controles.append("%s=%d" % (nombre_v4l2, int(c[nombre_cfg])))
 
         # 50 o 60 Hz segun la red electrica del pais. Mal puesto, las luces
         # LED/fluorescentes de la sede meten bandas que mueven el HSV.
-        if c.get("frecuencia_red_hz"):
-            controles.append("power_line_frequency=%d"
-                             % (2 if int(c["frecuencia_red_hz"]) == 60 else 1))
+        if c.get("frecuencia_red_hz") is not None:
+            val_hz = int(c["frecuencia_red_hz"])
+            if val_hz == 60:
+                controles.append("power_line_frequency=2")
+            elif val_hz == 50:
+                controles.append("power_line_frequency=1")
+            elif val_hz == 0:
+                controles.append("power_line_frequency=0")
 
         if not controles:
             return
 
-        # Los nombres de los controles cambian entre versiones de kernel/UVC
-        # (auto_exposure vs exposure_auto). Se aplican uno por uno y se ignoran
-        # los que la camara no soporte, en vez de fallar en bloque.
+        for ctrl in controles:
+            self._aplicar_ctrl_individual(dev, ctrl)
+
+    @staticmethod
+    def _aplicar_ctrl_individual(dev, ctrl):
         alias = {
             "auto_exposure": "exposure_auto",
             "exposure_time_absolute": "exposure_absolute",
             "white_balance_automatic": "white_balance_temperature_auto",
         }
-        for ctrl in controles:
-            if not self._v4l2(dev, ctrl):
-                clave, _, valor = ctrl.partition("=")
-                if clave in alias:
-                    # exposure_auto usa 1=manual igual que auto_exposure
-                    self._v4l2(dev, "%s=%s" % (alias[clave], valor))
+        if not Camara._v4l2(dev, ctrl):
+            clave, _, valor = ctrl.partition("=")
+            if clave in alias:
+                Camara._v4l2(dev, "%s=%s" % (alias[clave], valor))
+
+    def aplicar_control(self, clave_cfg, valor):
+        """Aplica un control de forma dinamica sin reiniciar la captura."""
+        self.cfg[clave_cfg] = valor
+        if clave_cfg == "voltear_180":
+            self.voltear = bool(valor)
+            return True
+
+        dev = "/dev/video%s" % self.indice
+        if clave_cfg == "auto_exposicion":
+            ctrl = "auto_exposure=%d" % (3 if valor else 1)
+            self._aplicar_ctrl_individual(dev, ctrl)
+            if not valor and self.cfg.get("exposicion_absoluta") is not None:
+                self._aplicar_ctrl_individual(dev, "exposure_time_absolute=%d" % self.cfg["exposicion_absoluta"])
+            return True
+
+        if clave_cfg == "exposicion_absoluta":
+            if not self.cfg.get("auto_exposicion", False):
+                self._aplicar_ctrl_individual(dev, "auto_exposure=1")
+                self._aplicar_ctrl_individual(dev, "exposure_time_absolute=%d" % int(valor))
+            return True
+
+        if clave_cfg == "auto_balance_blancos":
+            ctrl = "white_balance_automatic=%d" % (1 if valor else 0)
+            self._aplicar_ctrl_individual(dev, ctrl)
+            if not valor and self.cfg.get("temperatura_color") is not None:
+                self._aplicar_ctrl_individual(dev, "white_balance_temperature=%d" % self.cfg["temperatura_color"])
+            return True
+
+        if clave_cfg == "temperatura_color":
+            if not self.cfg.get("auto_balance_blancos", False):
+                self._aplicar_ctrl_individual(dev, "white_balance_automatic=0")
+                self._aplicar_ctrl_individual(dev, "white_balance_temperature=%d" % int(valor))
+            return True
+
+        mapeo = {
+            "brillo": "brightness",
+            "contraste": "contrast",
+            "saturacion": "saturation",
+            "ganancia": "gain",
+            "gamma": "gamma",
+            "nitidez": "sharpness",
+            "sharpness": "sharpness",
+            "compensacion_contraluz": "backlight_compensation"
+        }
+        if clave_cfg in mapeo:
+            self._aplicar_ctrl_individual(dev, "%s=%d" % (mapeo[clave_cfg], int(valor)))
+            return True
+
+        if clave_cfg == "frecuencia_red_hz":
+            hz = int(valor)
+            v = 2 if hz == 60 else (1 if hz == 50 else 0)
+            self._aplicar_ctrl_individual(dev, "power_line_frequency=%d" % v)
+            return True
+
+        return False
+
+    def actualizar_cfg(self, nueva_cfg):
+        """Actualiza la configuracion completa de la camara en caliente."""
+        for k, v in nueva_cfg.items():
+            self.aplicar_control(k, v)
+
+    @staticmethod
+    def leer_controles_v4l2(dev="/dev/video0"):
+        """Lee los controles reales de hardware V4L2."""
+        try:
+            r = subprocess.run(["v4l2-ctl", "-d", dev, "-l"],
+                               capture_output=True, text=True, timeout=3)
+            if r.returncode != 0:
+                return {}
+            valores = {}
+            for linea in r.stdout.splitlines():
+                linea = linea.strip()
+                if not linea or ":" not in linea:
+                    continue
+                partes = linea.split(":")
+                nombre = partes[0].split()[0]
+                resto = partes[1]
+                val_part = [p for p in resto.split() if p.startswith("value=")]
+                if val_part:
+                    try:
+                        valores[nombre] = int(val_part[0].split("=")[1])
+                    except ValueError:
+                        pass
+            return valores
+        except Exception:
+            return {}
 
     @staticmethod
     def _v4l2(dev, ctrl):

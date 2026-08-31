@@ -60,11 +60,26 @@ y tarda horas.
 
 Todo se calibra desde el navegador de tu PC, sin monitor en la Pi.
 
+### 2.1. Ajuste de Cámara y Exposición (Paso PREVIO indispensable)
+
+Si la imagen está oscura o la iluminación del recinto cambia, ajusta la cámara antes de tocar los colores HSV:
+
+```bash
+python3 /home/pi/vision/calibrar_camara.py
+```
+
+Abre `http://<ip-de-la-pi>:8082`.
+- Puedes mover los sliders en tiempo real (exposición, ganancia, balance de blancos, brillo, etc.).
+- O pulsar **"🪄 Auto-Medir y Fijar"**: la cámara mide automáticamente la luz ambiental de la pista y fija los parámetros en manual para que no haya cambios de color mientras el robot se mueve.
+- Pulsa **"💾 Guardar en config.json"**.
+
+### 2.2. Calibración de Color (HSV) y Geometría
+
 ```bash
 python3 /home/pi/vision/calibrar_web.py
 ```
 
-Abre `http://192.168.0.174:8081`. Verás la imagen real y la máscara del color, con
+Abre `http://<ip-de-la-pi>:8081`. Verás la imagen real y la máscara del color, con
 sliders HSV.
 
 **Orden de calibración:**
@@ -79,10 +94,10 @@ sliders HSV.
    página. Cada par `[ey, mm]` va a la tabla.
 
 > **Lo más importante:** el `config.json` fija exposición y balance de blancos con
-> `v4l2-ctl`. Si los dejas en automático, el HSV del objeto cambia solo con moverse
-> por la pista y la calibración deja de servir. Es la causa número uno de que una
-> detección por color "funcione en casa y falle en la competencia". Calibra con la
-> iluminación de la sede el mismo día.
+> `v4l2-ctl`. Si los dejas en automático continuo durante la competencia, el HSV del
+> objeto cambia con las sombras al moverse por la pista y la calibración deja de servir.
+> Lo ideal es usar **"Auto-Medir y Fijar"** en `calibrar_camara.py` el día de la competencia
+> con las luces del recinto y luego afinar los HSV.
 
 ### Antes de calibrar: comprueba la zona ciega
 
@@ -223,9 +238,10 @@ caja y una relación de aspecto más cuadrada que a los demás. Aun así:
 
 | archivo | qué hace |
 |---------|----------|
+| `calibrar_camara.py` | ajuste y calibración web de cámara (exposición, ganancia, balance de blancos, auto-medir) |
+| `calibrar_web.py` | calibrador de color HSV por navegador |
 | `vision_core.py` | cámara (hilo lector), detección HSV, distancia, overlay |
 | `vision_server.py` | bucle principal + enlace serial con la MegaPi |
-| `calibrar_web.py` | calibrador HSV por navegador |
 | `test_protocolo.py` | prueba del protocolo con un puerto serie virtual |
 | `config.json` | toda la configuración: cámara, colores, geometría, serial |
 | `install.sh` | instalación de dependencias |

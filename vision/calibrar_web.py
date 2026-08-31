@@ -53,7 +53,12 @@ select{padding:6px;background:#222;color:#eee;border:1px solid #444;border-radiu
 #info{font-family:ui-monospace,monospace;background:#0c0e12;padding:8px;border-radius:6px;margin-top:8px;font-size:13px}
 h4{margin:14px 0 4px}
 </style></head><body>
-<h3>Calibracion de color &mdash; WRO RoboMission</h3>
+<h3>Calibracion de color &mdash; WRO RoboMission
+  <a href="javascript:void(0)" onclick="window.open('http://' + window.location.hostname + ':8082', '_blank')"
+     style="font-size:13px; font-weight:normal; margin-left:14px; color:#58a6ff; text-decoration:none; background:#21262d; padding:4px 10px; border-radius:4px; border:1px solid #38404d;">
+     📷 Ajustar Camara (Exposicion / Luz)
+  </a>
+</h3>
 <div class="fila">
   <div><div>camara</div><img src="/video"></div>
   <div><div>mascara</div><img src="/mask"></div>
@@ -260,6 +265,8 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
+    import signal
+    import os
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default=None)
     ap.add_argument("--puerto", type=int, default=8081)
@@ -272,11 +279,25 @@ def main():
 
     threading.Thread(target=bucle_captura, args=(cfg, args), daemon=True).start()
     srv = ThreadingHTTPServer(("0.0.0.0", args.puerto), Handler)
+
+    def signal_handler(sig, frame):
+        print("\nDeteniendo servidor...", flush=True)
+        try:
+            srv.server_close()
+        except Exception:
+            pass
+        os._exit(0)
+
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+
     print("Calibrador en http://<ip-de-la-pi>:%d" % args.puerto, flush=True)
     try:
         srv.serve_forever()
-    except KeyboardInterrupt:
+    except Exception:
         pass
+    finally:
+        os._exit(0)
 
 
 if __name__ == "__main__":
