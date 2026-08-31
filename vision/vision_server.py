@@ -248,7 +248,10 @@ def main():
                 det, color_detectado, _mask, roi_y0 = detector.detectar_auto(frame)
             else:
                 det, _mask, roi_y0 = detector.detectar(frame, color)
-                color_detectado = color if det.encontrado else "NINGUNO"
+                # En modo fijo se conserva el color solicitado incluso cuando
+                # found=0. La MegaPi usa ese campo para validar el cambio de
+                # modo; NINGUNO queda reservado para AUTO sin candidato.
+                color_detectado = color
             f = fps.tick()
 
             ahora = time.time()
