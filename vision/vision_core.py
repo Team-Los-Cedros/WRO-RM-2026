@@ -102,11 +102,11 @@ class Camara:
         self.cap.set(cv2.CAP_PROP_FPS, self.cfg.get("fps", 30))
         self.cap.set(cv2.CAP_PROP_BUFFERSIZE, self.cfg.get("buffers", 3))
 
-        # Descartar los primeros frames para estabilizar el sensor y evitar resets de V4L2
+        # Primero se estabiliza el stream. Varias camaras UVC ignoran o
+        # reinician controles si se aplican antes del primer frame.
         for _ in range(3):
             self.cap.read()
 
-        # Aplicar controles V4L2 despues de que el driver inicialice el stream
         self._aplicar_controles_v4l2()
 
         self._corriendo = True
@@ -142,6 +142,8 @@ class Camara:
                     self._frame = frame
                     self._seq += 1
         except Exception:
+            # Al cerrar VideoCapture, algunos drivers lanzan una excepcion en
+            # el hilo lector. El cierre normal no debe tumbar el proceso.
             pass
         finally:
             if self.cap is not None:
@@ -163,7 +165,6 @@ class Camara:
             controles.append("auto_exposure=1")
             if c.get("exposicion_absoluta") is not None:
                 controles.append("exposure_time_absolute=%d" % c["exposicion_absoluta"])
-
         if c.get("auto_balance_blancos") is True:
             controles.append("white_balance_automatic=1")
         elif c.get("auto_balance_blancos") is False:
@@ -185,13 +186,10 @@ class Camara:
         # 50 o 60 Hz segun la red electrica del pais. Mal puesto, las luces
         # LED/fluorescentes de la sede meten bandas que mueven el HSV.
         if c.get("frecuencia_red_hz") is not None:
-            val_hz = int(c["frecuencia_red_hz"])
-            if val_hz == 60:
-                controles.append("power_line_frequency=2")
-            elif val_hz == 50:
-                controles.append("power_line_frequency=1")
-            elif val_hz == 0:
-                controles.append("power_line_frequency=0")
+            hz = int(c["frecuencia_red_hz"])
+            if hz in (0, 50, 60):
+                controles.append("power_line_frequency=%d"
+                                 % (2 if hz == 60 else (1 if hz == 50 else 0)))
 
         if not controles:
             return
@@ -201,6 +199,7 @@ class Camara:
 
     @staticmethod
     def _aplicar_ctrl_individual(dev, ctrl):
+        """Aplica un control y prueba el alias usado por kernels antiguos."""
         alias = {
             "auto_exposure": "exposure_auto",
             "exposure_time_absolute": "exposure_absolute",
@@ -212,7 +211,7 @@ class Camara:
                 Camara._v4l2(dev, "%s=%s" % (alias[clave], valor))
 
     def aplicar_control(self, clave_cfg, valor):
-        """Aplica un control de forma dinamica sin reiniciar la captura."""
+        """Aplica un control de camara en caliente (usado por calibradores)."""
         self.cfg[clave_cfg] = valor
         if clave_cfg == "voltear_180":
             self.voltear = bool(valor)
@@ -220,29 +219,29 @@ class Camara:
 
         dev = "/dev/video%s" % self.indice
         if clave_cfg == "auto_exposicion":
-            ctrl = "auto_exposure=%d" % (3 if valor else 1)
-            self._aplicar_ctrl_individual(dev, ctrl)
+            self._aplicar_ctrl_individual(dev, "auto_exposure=%d" % (3 if valor else 1))
             if not valor and self.cfg.get("exposicion_absoluta") is not None:
-                self._aplicar_ctrl_individual(dev, "exposure_time_absolute=%d" % self.cfg["exposicion_absoluta"])
+                self._aplicar_ctrl_individual(
+                    dev, "exposure_time_absolute=%d" % self.cfg["exposicion_absoluta"])
             return True
-
         if clave_cfg == "exposicion_absoluta":
             if not self.cfg.get("auto_exposicion", False):
                 self._aplicar_ctrl_individual(dev, "auto_exposure=1")
-                self._aplicar_ctrl_individual(dev, "exposure_time_absolute=%d" % int(valor))
+                self._aplicar_ctrl_individual(
+                    dev, "exposure_time_absolute=%d" % int(valor))
             return True
-
         if clave_cfg == "auto_balance_blancos":
-            ctrl = "white_balance_automatic=%d" % (1 if valor else 0)
-            self._aplicar_ctrl_individual(dev, ctrl)
+            self._aplicar_ctrl_individual(
+                dev, "white_balance_automatic=%d" % (1 if valor else 0))
             if not valor and self.cfg.get("temperatura_color") is not None:
-                self._aplicar_ctrl_individual(dev, "white_balance_temperature=%d" % self.cfg["temperatura_color"])
+                self._aplicar_ctrl_individual(
+                    dev, "white_balance_temperature=%d" % self.cfg["temperatura_color"])
             return True
-
         if clave_cfg == "temperatura_color":
             if not self.cfg.get("auto_balance_blancos", False):
                 self._aplicar_ctrl_individual(dev, "white_balance_automatic=0")
-                self._aplicar_ctrl_individual(dev, "white_balance_temperature=%d" % int(valor))
+                self._aplicar_ctrl_individual(
+                    dev, "white_balance_temperature=%d" % int(valor))
             return True
 
         mapeo = {
@@ -253,28 +252,26 @@ class Camara:
             "gamma": "gamma",
             "nitidez": "sharpness",
             "sharpness": "sharpness",
-            "compensacion_contraluz": "backlight_compensation"
+            "compensacion_contraluz": "backlight_compensation",
         }
         if clave_cfg in mapeo:
-            self._aplicar_ctrl_individual(dev, "%s=%d" % (mapeo[clave_cfg], int(valor)))
+            self._aplicar_ctrl_individual(
+                dev, "%s=%d" % (mapeo[clave_cfg], int(valor)))
             return True
-
         if clave_cfg == "frecuencia_red_hz":
             hz = int(valor)
             v = 2 if hz == 60 else (1 if hz == 50 else 0)
             self._aplicar_ctrl_individual(dev, "power_line_frequency=%d" % v)
             return True
-
         return False
 
     def actualizar_cfg(self, nueva_cfg):
-        """Actualiza la configuracion completa de la camara en caliente."""
-        for k, v in nueva_cfg.items():
-            self.aplicar_control(k, v)
+        for clave, valor in nueva_cfg.items():
+            self.aplicar_control(clave, valor)
 
     @staticmethod
     def leer_controles_v4l2(dev="/dev/video0"):
-        """Lee los controles reales de hardware V4L2."""
+        """Lee los valores efectivos de los controles soportados por V4L2."""
         try:
             r = subprocess.run(["v4l2-ctl", "-d", dev, "-l"],
                                capture_output=True, text=True, timeout=3)
@@ -285,17 +282,16 @@ class Camara:
                 linea = linea.strip()
                 if not linea or ":" not in linea:
                     continue
-                partes = linea.split(":")
-                nombre = partes[0].split()[0]
-                resto = partes[1]
-                val_part = [p for p in resto.split() if p.startswith("value=")]
-                if val_part:
-                    try:
-                        valores[nombre] = int(val_part[0].split("=")[1])
-                    except ValueError:
-                        pass
+                nombre, resto = linea.split(":", 1)
+                nombre = nombre.split()[0]
+                for parte in resto.split():
+                    if parte.startswith("value="):
+                        try:
+                            valores[nombre] = int(parte.split("=", 1)[1])
+                        except ValueError:
+                            pass
             return valores
-        except Exception:
+        except (FileNotFoundError, subprocess.TimeoutExpired):
             return {}
 
     @staticmethod
@@ -340,10 +336,12 @@ class Camara:
 # ---------------------------------------------------------------------------
 
 class Deteccion:
-    __slots__ = ("encontrado", "cx", "cy", "y_base", "area", "w", "h", "dist_mm", "ex", "ey")
+    __slots__ = ("encontrado", "color", "cx", "cy", "y_base", "area",
+                 "w", "h", "dist_mm", "ex", "ey", "confianza")
 
     def __init__(self):
         self.encontrado = False
+        self.color = "NINGUNO"
         self.cx = 0
         self.cy = 0
         self.y_base = 0
@@ -353,6 +351,7 @@ class Deteccion:
         self.dist_mm = -1
         self.ex = 0
         self.ey = 0
+        self.confianza = 0
 
 
 def _rangos_a_arrays(rangos):
@@ -371,6 +370,9 @@ class Detector:
         self.area_min = det.get("area_min_px", 120)
         self.aspecto_max = det.get("relacion_aspecto_max", 4.0)
         self.alto_min = det.get("alto_min_px", 6)
+        self.y_base_max_frac = det.get("y_base_max_frac", 1.0)
+        self.auto_ex_max_px = det.get("auto_ex_max_px", 110)
+        self.zonas_ignoradas = det.get("zonas_ignoradas", [])
         self.reglas = {k: v for k, v in cfg.get("reglas_color", {}).items()
                        if not k.startswith("_")}
         k = det.get("kernel_morfologia", 3)
@@ -393,18 +395,35 @@ class Detector:
     def recargar_color(self, color):
         self._cache_rangos.pop(color, None)
 
-    def mascara(self, frame, color):
-        """Devuelve (mascara, y0) donde y0 es el offset vertical de la ROI."""
+    def _preparar_hsv(self, frame):
         alto = frame.shape[0]
         y0 = int(alto * self.roi_y[0])
         y1 = int(alto * self.roi_y[1])
         roi = frame[y0:y1]
+        return cv2.cvtColor(roi, cv2.COLOR_BGR2HSV), y0, y1
 
-        hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+    def mascara(self, frame, color, hsv_roi=None, y0=None, y1=None):
+        """Devuelve la mascara del color, anulando partes fijas del robot."""
+        if hsv_roi is None:
+            hsv_roi, y0, y1 = self._preparar_hsv(frame)
         rangos = self.rangos(color)
-        mask = cv2.inRange(hsv, rangos[0][0], rangos[0][1])
+        mask = cv2.inRange(hsv_roi, rangos[0][0], rangos[0][1])
         for bajo, alto_r in rangos[1:]:
-            mask |= cv2.inRange(hsv, bajo, alto_r)
+            mask |= cv2.inRange(hsv_roi, bajo, alto_r)
+
+        # Los dedos azules de la garra aparecen siempre abajo. Las zonas se
+        # expresan como [x0,y0,x1,y1] normalizadas para sobrevivir a cambios
+        # de resolucion y se recortan solo dentro de la ROI activa.
+        alto, ancho = frame.shape[:2]
+        for zona in self.zonas_ignoradas:
+            if len(zona) != 4:
+                continue
+            x0 = max(0, min(ancho, int(float(zona[0]) * ancho)))
+            x1 = max(0, min(ancho, int(float(zona[2]) * ancho)))
+            zy0 = max(y0, min(y1, int(float(zona[1]) * alto))) - y0
+            zy1 = max(y0, min(y1, int(float(zona[3]) * alto))) - y0
+            if x1 > x0 and zy1 > zy0:
+                mask[zy0:zy1, x0:x1] = 0
 
         # OPEN quita el ruido de pixeles sueltos; CLOSE cierra los huecos que
         # deja el brillo especular sobre los cubos de plastico.
@@ -412,23 +431,23 @@ class Detector:
         mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, self.kernel)
         return mask, y0
 
-    def detectar(self, frame, color):
-        d = Deteccion()
-        mask, y0 = self.mascara(frame, color)
-
-        # El negro comparte HSV con las sombras y con las lineas de la pista,
-        # asi que se le pueden exigir umbrales propios via "reglas_color".
+    def candidatos(self, frame, color, hsv_roi=None, y0=None, y1=None):
+        """Devuelve todos los contornos plausibles, ordenados por calidad."""
+        if hsv_roi is None:
+            hsv_roi, y0, y1 = self._preparar_hsv(frame)
+        mask, y0 = self.mascara(frame, color, hsv_roi, y0, y1)
         r = self.reglas.get(color, {})
         area_min = r.get("area_min_px", self.area_min)
         alto_min = r.get("alto_min_px", self.alto_min)
         aspecto_max = r.get("relacion_aspecto_max", self.aspecto_max)
+        y_base_max = int(frame.shape[0] * r.get(
+            "y_base_max_frac", self.y_base_max_frac))
 
         contornos = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)[-2]
-        mejor = None
-        mejor_area = 0
+        candidatos = []
         for c in contornos:
             area = cv2.contourArea(c)
-            if area < area_min or area <= mejor_area:
+            if area < area_min:
                 continue
             x, y, w, h = cv2.boundingRect(c)
             if w == 0 or h < alto_min:
@@ -436,23 +455,71 @@ class Detector:
             aspecto = max(w / float(h), h / float(w))
             if aspecto > aspecto_max:
                 continue  # tiras largas = linea del suelo o reflejo, no un objeto
-            mejor = (x, y, w, h, area)
-            mejor_area = area
+            y_base = y + h + y0
+            if y_base > y_base_max:
+                continue
 
-        if mejor is None:
-            return d, mask, y0
+            d = Deteccion()
+            d.encontrado = True
+            d.color = color
+            d.cx = x + w // 2
+            d.cy = y + h // 2 + y0
+            d.y_base = y_base
+            d.area = int(area)
+            d.w, d.h = w, h
+            d.ex = d.cx - self.cx_garra
+            d.ey = y_base
+            d.dist_mm = self.distancia_mm(y_base)
 
-        x, y, w, h, area = mejor
-        d.encontrado = True
-        d.cx = x + w // 2
-        d.cy = y + h // 2 + y0
-        d.y_base = y + h + y0          # borde inferior = punto de contacto con el suelo
-        d.area = int(area)
-        d.w, d.h = w, h
-        d.ex = d.cx - self.cx_garra
-        d.ey = d.y_base
-        d.dist_mm = self.distancia_mm(d.y_base)
-        return d, mask, y0
+            # Calidad: se prioriza el objeto frente a la garra, luego una
+            # silueta compacta y finalmente un area suficientemente grande.
+            medio_ancho = max(frame.shape[1] / 2.0, 1.0)
+            q_centro = max(0.0, 1.0 - abs(d.ex) / medio_ancho)
+            q_forma = max(0.0, 1.0 - (aspecto - 1.0) /
+                          max(aspecto_max - 1.0, 0.01))
+            q_area = min(1.0, area / max(float(area_min) * 6.0, 1.0))
+            d.confianza = int(round(100.0 *
+                                    (0.60 * q_centro + 0.25 * q_forma + 0.15 * q_area)))
+            candidatos.append(d)
+
+        candidatos.sort(key=lambda d: (d.confianza, -abs(d.ex), d.area), reverse=True)
+        return candidatos, mask, y0
+
+    def detectar(self, frame, color, hsv_roi=None, y0=None, y1=None):
+        candidatos, mask, y0 = self.candidatos(frame, color, hsv_roi, y0, y1)
+        return (candidatos[0] if candidatos else Deteccion()), mask, y0
+
+    def detectar_auto(self, frame):
+        """Reconoce el artefacto alineado con la garra.
+
+        Los colores cromaticos tienen prioridad. NEGRO se evalua solo cuando
+        no hay uno de ellos centrado, porque los cuatro cuadros de salida y
+        las lineas de la pista tambien son negros.
+        """
+        hsv_roi, y0, y1 = self._preparar_hsv(frame)
+        colores = colores_disponibles(self.cfg)
+        cromaticos = [c for c in colores if c != "NEGRO"]
+        mejores = []
+        mascaras = {}
+        for color in cromaticos:
+            d, mask, _ = self.detectar(frame, color, hsv_roi, y0, y1)
+            mascaras[color] = mask
+            if d.encontrado and abs(d.ex) <= self.auto_ex_max_px:
+                mejores.append(d)
+
+        if mejores:
+            mejores.sort(key=lambda d: (abs(d.ex), -d.confianza, -d.area))
+            d = mejores[0]
+            return d, d.color, mascaras[d.color], y0
+
+        if "NEGRO" in colores:
+            d, mask, _ = self.detectar(frame, "NEGRO", hsv_roi, y0, y1)
+            if d.encontrado and abs(d.ex) <= self.auto_ex_max_px:
+                return d, "NEGRO", mask, y0
+            return Deteccion(), "NINGUNO", mask, y0
+
+        vacia = np.zeros(hsv_roi.shape[:2], dtype=np.uint8)
+        return Deteccion(), "NINGUNO", vacia, y0
 
     def distancia_mm(self, y_base):
         """Interpola la tabla de calibracion. Fuera de rango hace clamp."""
@@ -475,7 +542,8 @@ def dibujar_overlay(frame, det, color, fps, roi_y0, cx_garra):
         y = det.y_base - det.h
         cv2.rectangle(frame, (x, y), (x + det.w, det.y_base), (0, 255, 0), 2)
         cv2.circle(frame, (det.cx, det.y_base), 4, (0, 0, 255), -1)
-        txt = "ex=%+d d=%dmm a=%d" % (det.ex, det.dist_mm, det.area)
+        txt = "ex=%+d d=%dmm a=%d q=%d" % (
+            det.ex, det.dist_mm, det.area, det.confianza)
     else:
         txt = "sin objeto"
 

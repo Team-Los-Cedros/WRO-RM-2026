@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """
-Servidor de vision: detecta el objeto del color pedido y le dice a la MegaPi
-hacia donde moverse.
+Servidor de vision: reconoce o sigue un artefacto y le dice a la MegaPi hacia
+donde moverse.
 
 PROTOCOLO (texto ASCII, lineas terminadas en \n, 115200 baudios)
 
   Pi -> MegaPi   (una linea por frame, a la frecuencia de serial.hz_envio)
-      T <found> <color> <ex> <ey> <area> <dist> <fps>
-      ejemplo: T 1 ROJO -34 187 950 145 24
-               T 0 ROJO 0 0 0 -1 24
+      T <found> <color> <ex> <ey> <area> <dist> <fps> <confianza>
+      ejemplo: T 1 ROJO -34 187 950 145 24 88
+               T 0 NINGUNO 0 0 0 -1 24 0
 
       found : 1 si se ve el objeto, 0 si no
       ex    : error horizontal en pixeles respecto al centro de la garra.
@@ -19,7 +19,7 @@ PROTOCOLO (texto ASCII, lineas terminadas en \n, 115200 baudios)
       dist  : distancia estimada en mm segun la tabla de calibracion (-1 si no aplica)
 
   MegaPi -> Pi
-      C <COLOR>   cambia el color buscado (ROJO / VERDE / NEGRO / AZUL / AMARILLO)
+      C <COLOR>   sigue ese color. C AUTO reconoce el artefacto centrado.
       X           escanea LOS CINCO colores en el frame actual y responde
                     X ROJO 1 -34 145 VERDE 0 0 -1 NEGRO 1 88 260 ...
                   Sirve para saber cual de los cinco colores NO salio en la
@@ -46,7 +46,7 @@ import cv2
 from vision_core import (Camara, ContadorFPS, Detector, cargar_config,
                          colores_disponibles, dibujar_overlay)
 
-VERSION = "1.0"
+VERSION = "2.0"
 
 
 # ---------------------------------------------------------------------------
@@ -204,7 +204,7 @@ def main():
     cfg = cargar_config(args.config)
     disponibles = colores_disponibles(cfg)
     color = (args.color or cfg["deteccion"].get("color_inicial", disponibles[0])).upper()
-    if color not in disponibles:
+    if color not in disponibles and color != "AUTO":
         log("color '%s' no definido; usando %s" % (color, disponibles[0]))
         color = disponibles[0]
 
@@ -244,15 +244,20 @@ def main():
                 log("sin frames nuevos de la camara")
                 continue
 
-            det, _mask, roi_y0 = detector.detectar(frame, color)
+            if color == "AUTO":
+                det, color_detectado, _mask, roi_y0 = detector.detectar_auto(frame)
+            else:
+                det, _mask, roi_y0 = detector.detectar(frame, color)
+                color_detectado = color if det.encontrado else "NINGUNO"
             f = fps.tick()
 
             ahora = time.time()
             if enviando and (ahora - ultimo_envio) >= periodo_envio:
                 ultimo_envio = ahora
-                trama = "T %d %s %d %d %d %d %d" % (
-                    1 if det.encontrado else 0, color,
-                    det.ex, det.ey, det.area, det.dist_mm, int(f))
+                trama = "T %d %s %d %d %d %d %d %d" % (
+                    1 if det.encontrado else 0, color_detectado,
+                    det.ex, det.ey, det.area, det.dist_mm, int(f),
+                    det.confianza)
                 if enlace:
                     enlace.enviar(trama)
                 if args.verbose or enlace is None:
@@ -268,7 +273,7 @@ def main():
                     cmd = partes[0].upper()
                     if cmd == "C" and len(partes) >= 2:
                         nuevo = partes[1].upper()
-                        if nuevo in disponibles:
+                        if nuevo in disponibles or nuevo == "AUTO":
                             color = nuevo
                             log("color -> %s" % color)
                             enlace.enviar("K COLOR %s" % color)
@@ -288,10 +293,11 @@ def main():
                         enviando = partes[1] != "0"
                         enlace.enviar("K STREAM %d" % (1 if enviando else 0))
                     elif cmd == "P":
-                        enlace.enviar("K %s %s" % (VERSION, ",".join(disponibles)))
+                        enlace.enviar("K %s AUTO,%s" % (VERSION, ",".join(disponibles)))
 
             if buffer_frame is not None:
-                buffer_frame.set(dibujar_overlay(frame.copy(), det, color, f,
+                color_overlay = color_detectado if color == "AUTO" else color
+                buffer_frame.set(dibujar_overlay(frame.copy(), det, color_overlay, f,
                                                  roi_y0, detector.cx_garra))
 
     except KeyboardInterrupt:

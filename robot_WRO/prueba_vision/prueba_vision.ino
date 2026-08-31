@@ -1,14 +1,17 @@
 // =========================================================================
-// WRO RoboMission Junior 2026 - MegaPi + Raspberry Pi 3B (vision por color)
+// WRO RoboMission Junior 2026 - 4 artefactos con MegaPi + Raspberry Pi 3B
 //
-// La Raspberry hace de "sensor inteligente": manda 20 veces por segundo una
-// linea con la posicion del objeto. La MegaPi sigue siendo el cerebro que
-// decide la rutina.
+// Estrategia:
+//   1. El robot inicia centrado frente a los cuatro artefactos.
+//   2. Se desplaza en L hasta cada slot, reconoce el color y afina la pose.
+//   3. Ejecuta la secuencia mecanica probada en prueba_centrales.ino.
+//   4. Vuelve al centro, viaja al museo y descarga en ROJO, VERDE, NEGRO,
+//      AZUL o AMARILLO sin desplazarse lateralmente junto a los ya puestos.
+//   5. Regresa por la misma ruta y repite hasta cuatro veces o hasta 116 s.
 //
-// CABLEADO (opcion recomendada): cable USB de la Raspberry al puerto USB de
-// programacion de la MegaPi. En ese caso SERIAL_VISION = Serial.
-// Si prefieres los pines TX2/RX2 usa SERIAL_VISION = Serial2 y lee las notas
-// de nivel logico al final de este archivo.
+// IMPORTANTE: los parametros marcados CALIBRAR son puntos de partida. Antes
+// de una ronda oficial hay que medir PASO_SLOT_GRADOS, PASO_MUSEO_GRADOS y
+// las dos distancias de ruta sobre la pista concreta.
 // =========================================================================
 
 #include <Arduino.h>
@@ -20,128 +23,148 @@
 #define PIN_TCRT_IZQ A4
 #define PIN_TCRT_DER A3
 
-// ---- Enlace con la Raspberry -------------------------------------------
-// Serial  = cable USB (recomendado, sin conversion de niveles)
-// Serial2 = pines TX2(16)/RX2(17)
 #define SERIAL_VISION Serial
-#define BAUD_VISION   115200
+#define BAUD_VISION 115200
 
 MeGyro giroscopio(8);
 MePort placaExpansora(7);
+MeEncoderOnBoard Encoder_1(SLOT1);  // izquierdo
+MeEncoderOnBoard Encoder_2(SLOT2);  // derecho
 Servo servoGarra1;
 Servo servoGarra2;
 Servo miServo;
-const int pinServo = 5;
 
-MeEncoderOnBoard Encoder_1(SLOT1); // Motor Izquierdo
-MeEncoderOnBoard Encoder_2(SLOT2); // Motor Derecho
-
-void isr_process_encoder1(void){
-  if(digitalRead(Encoder_1.getPortB()) == 0){ Encoder_1.pulsePosMinus(); }
-  else{ Encoder_1.pulsePosPlus(); }
-}
-void isr_process_encoder2(void){
-  if(digitalRead(Encoder_2.getPortB()) == 0){ Encoder_2.pulsePosMinus(); }
-  else{ Encoder_2.pulsePosPlus(); }
-}
+const int PIN_SERVO_PALA = 5;
 
 bool rutinaIniciada = false;
+bool falloNavegacion = false;
+unsigned long inicioRutinaMs = 0;
 
-// Declaraciones adelantadas. El IDE de Arduino genera los prototipos solo,
-// pero dejarlos escritos evita sorpresas al reordenar el archivo.
 void _loop();
-void _delay(float seconds);
-void avanzar(long grados, float velocidad, float tiempoEspera);
-void retroceder(long grados, float velocidad, float tiempoEspera);
+void _delay(float segundos);
+void motoresParar();
+
+void isr_process_encoder1(void) {
+  if (digitalRead(Encoder_1.getPortB()) == 0) Encoder_1.pulsePosMinus();
+  else Encoder_1.pulsePosPlus();
+}
+
+void isr_process_encoder2(void) {
+  if (digitalRead(Encoder_2.getPortB()) == 0) Encoder_2.pulsePosMinus();
+  else Encoder_2.pulsePosPlus();
+}
 
 // =========================================================================
-// VISION: recepcion no bloqueante de las tramas de la Raspberry
+// PROTOCOLO DE VISION
 // =========================================================================
-//
-// Trama:  T <found> <color> <ex> <ey> <area> <dist> <fps>
-//   ex   : error horizontal en px. NEGATIVO = objeto a la izquierda.
-//   ey   : fila del borde inferior (mayor = mas cerca)
-//   dist : mm estimados (-1 si no hay dato)
+// Pi -> MegaPi:
+//   T <found> <color> <ex> <ey> <area> <dist> <fps> <confianza>
+// MegaPi -> Pi:
+//   C AUTO   reconoce el artefacto alineado
+//   C ROJO   (o cualquier color) sigue solo ese artefacto
+//   S 0|1    detiene/activa el envio continuo
 
-struct VisionData {
-  bool  encontrado;
-  int   ex;
-  int   ey;
-  long  area;
-  int   dist;
-  int   fps;
-  unsigned long tRecepcion;   // millis() de la ultima trama valida
+enum ColorObjeto {
+  COLOR_NINGUNO = -1,
+  COLOR_ROJO = 0,
+  COLOR_VERDE = 1,
+  COLOR_NEGRO = 2,
+  COLOR_AZUL = 3,
+  COLOR_AMARILLO = 4
 };
 
-VisionData vision = {false, 0, 0, 0, -1, 0, 0};
+// Evita que el preprocesador de Arduino genere estos prototipos antes del
+// enum (lo que haria que ColorObjeto todavia no existiera al compilar).
+ColorObjeto colorDesdeTexto(const char* texto);
+void logColor(const char* prefijo, ColorObjeto color);
+void visionPedirColor(ColorObjeto color);
+ColorObjeto visionIdentificarColor(float timeoutSeg);
+bool prepararCapturaPorVision(ColorObjeto color);
+long offsetDestino(ColorObjeto color);
+bool depositarColorDesdeStaging(ColorObjeto color);
 
-// 128 bytes: la respuesta al comando X lleva los cinco colores y ronda los
-// 75 caracteres. Con 64 se cortaba.
-char  bufVision[128];
-byte  idxVision = 0;
+const char* const NOMBRES_COLOR[5] = {
+  "ROJO", "VERDE", "NEGRO", "AZUL", "AMARILLO"
+};
 
-// Orden de descarga de IZQUIERDA a DERECHA segun la pista oficial.
-// Salen 4 de estos 5 colores en cada ronda; el hueco del que no aparezca se
-// deja vacio, y como cada color tiene posicion fija no hay que recolocar nada.
-const char* const ORDEN_COLORES[5] = {"ROJO", "VERDE", "NEGRO", "AZUL", "AMARILLO"};
-bool colorPresente[5] = {false, false, false, false, false};
-volatile bool respuestaEscaneo = false;
+struct VisionData {
+  bool encontrado;
+  ColorObjeto color;
+  int ex;
+  int ey;
+  long area;
+  int dist;
+  int fps;
+  int confianza;
+  unsigned long tRecepcion;
+  unsigned long secuencia;
+};
 
-// La MegaPi no debe usar Serial.print() a secas si comparte el cable con la
-// Pi: el prefijo '#' le dice a la Raspberry que es un log y no una trama.
+VisionData vision = {
+  false, COLOR_NINGUNO, 0, 0, 0, -1, 0, 0, 0, 0
+};
+
+char bufVision[128];
+byte idxVision = 0;
+
+ColorObjeto colorEnSlot[4] = {
+  COLOR_NINGUNO, COLOR_NINGUNO, COLOR_NINGUNO, COLOR_NINGUNO
+};
+bool colorCompletado[5] = {false, false, false, false, false};
+
+ColorObjeto colorDesdeTexto(const char* texto) {
+  if (!texto) return COLOR_NINGUNO;
+  for (int i = 0; i < 5; i++) {
+    if (strcmp(texto, NOMBRES_COLOR[i]) == 0) return (ColorObjeto)i;
+  }
+  return COLOR_NINGUNO;
+}
+
 void logPi(const char* msg) {
   SERIAL_VISION.print('#');
   SERIAL_VISION.println(msg);
 }
 
-// Respuesta al comando X:
-//   X ROJO 1 -34 145 VERDE 0 0 -1 NEGRO 1 88 260 AZUL 0 0 -1 AMARILLO 1 12 190
-void visionProcesarEscaneo(char* linea) {
-  for (int i = 0; i < 5; i++) colorPresente[i] = false;
-
-  char* tok = strtok(linea + 2, " ");
-  while (tok != NULL) {
-    int idx = -1;
-    for (int i = 0; i < 5; i++) {
-      if (strcmp(tok, ORDEN_COLORES[i]) == 0) { idx = i; break; }
-    }
-    char* tFound = strtok(NULL, " ");   // found
-    strtok(NULL, " ");                  // ex  (no se usa en el escaneo)
-    strtok(NULL, " ");                  // dist
-    if (idx >= 0 && tFound != NULL) colorPresente[idx] = (atoi(tFound) != 0);
-    tok = strtok(NULL, " ");
+void logColor(const char* prefijo, ColorObjeto color) {
+  SERIAL_VISION.print('#');
+  SERIAL_VISION.print(prefijo);
+  if (color >= COLOR_ROJO && color <= COLOR_AMARILLO) {
+    SERIAL_VISION.println(NOMBRES_COLOR[(int)color]);
+  } else {
+    SERIAL_VISION.println("NINGUNO");
   }
-  respuestaEscaneo = true;
 }
 
 void visionProcesarLinea(char* linea) {
-  if (linea[0] == 'K' || linea[0] == 'E') return;   // acuse de recibo de la Pi
-  if (linea[0] == 'X' && linea[1] == ' ') { visionProcesarEscaneo(linea); return; }
   if (linea[0] != 'T' || linea[1] != ' ') return;
 
-  char* tok = strtok(linea + 2, " ");   // found
+  char* tok = strtok(linea + 2, " ");
   if (!tok) return;
-  bool found = (atoi(tok) != 0);
+  bool encontrado = atoi(tok) != 0;
 
-  tok = strtok(NULL, " ");              // color (no se usa aqui)
+  tok = strtok(NULL, " ");
   if (!tok) return;
+  ColorObjeto color = colorDesdeTexto(tok);
 
-  tok = strtok(NULL, " "); if (!tok) return; int ex   = atoi(tok);
-  tok = strtok(NULL, " "); if (!tok) return; int ey   = atoi(tok);
-  tok = strtok(NULL, " "); if (!tok) return; long ar  = atol(tok);
+  tok = strtok(NULL, " "); if (!tok) return; int ex = atoi(tok);
+  tok = strtok(NULL, " "); if (!tok) return; int ey = atoi(tok);
+  tok = strtok(NULL, " "); if (!tok) return; long area = atol(tok);
   tok = strtok(NULL, " "); if (!tok) return; int dist = atoi(tok);
-  tok = strtok(NULL, " ");                   int fps  = tok ? atoi(tok) : 0;
+  tok = strtok(NULL, " "); int fps = tok ? atoi(tok) : 0;
+  tok = strtok(NULL, " "); int confianza = tok ? atoi(tok) : 0;
 
-  vision.encontrado = found;
-  vision.ex   = ex;
-  vision.ey   = ey;
-  vision.area = ar;
+  vision.encontrado = encontrado;
+  vision.color = encontrado ? color : COLOR_NINGUNO;
+  vision.ex = ex;
+  vision.ey = ey;
+  vision.area = area;
   vision.dist = dist;
-  vision.fps  = fps;
+  vision.fps = fps;
+  vision.confianza = confianza;
   vision.tRecepcion = millis();
+  vision.secuencia++;
 }
 
-// Se llama desde _loop(); nunca bloquea.
 void visionActualizar() {
   while (SERIAL_VISION.available()) {
     char c = SERIAL_VISION.read();
@@ -154,231 +177,355 @@ void visionActualizar() {
     } else if (idxVision < sizeof(bufVision) - 1) {
       bufVision[idxVision++] = c;
     } else {
-      idxVision = 0;   // linea corrupta o demasiado larga: se descarta
+      idxVision = 0;
     }
   }
 }
 
-// true si la ultima trama es reciente (el enlace esta vivo)
-bool visionViva(unsigned long msMax = 300) {
-  return (millis() - vision.tRecepcion) < msMax;
+bool visionViva(unsigned long msMax = 350) {
+  return vision.tRecepcion != 0 && millis() - vision.tRecepcion < msMax;
 }
 
-// true si ademas se esta viendo el objeto
-bool visionVeObjeto(unsigned long msMax = 300) {
+bool visionVeObjeto(unsigned long msMax = 350) {
   return visionViva(msMax) && vision.encontrado;
 }
 
-void visionPedirColor(const char* color) {
+void visionPedirModo(const char* modo) {
   SERIAL_VISION.print("C ");
-  SERIAL_VISION.println(color);
+  SERIAL_VISION.println(modo);
   vision.encontrado = false;
+  vision.color = COLOR_NINGUNO;
   vision.tRecepcion = 0;
 }
 
-/**
- * Pregunta a la Raspberry cuales de los cinco colores se ven desde aqui.
- * Rellena colorPresente[]. Conviene llamarlo al principio de la ronda, desde
- * un punto donde se vean los cuatro objetos.
- * @return true si la Pi contesto a tiempo.
- */
-bool visionEscanearColores(float timeoutSeg = 2.0) {
-  respuestaEscaneo = false;
-  SERIAL_VISION.println("X");
+void visionPedirColor(ColorObjeto color) {
+  if (color >= COLOR_ROJO && color <= COLOR_AMARILLO) {
+    visionPedirModo(NOMBRES_COLOR[(int)color]);
+  }
+}
 
-  unsigned long t0 = millis();
-  while (millis() - t0 < (unsigned long)(timeoutSeg * 1000.0)) {
+// Vota durante varios frames. El area da peso adicional para que los detalles
+// amarillos del artefacto verde no ganen a la estructura verde completa.
+ColorObjeto visionIdentificarColor(float timeoutSeg) {
+  const int CONFIANZA_MIN = 45;
+  const int EX_MAX = 110;
+  int votos[5] = {0, 0, 0, 0, 0};
+  int framesValidos = 0;
+  unsigned long ultimaSecuencia = vision.secuencia;
+  unsigned long inicio = millis();
+  unsigned long timeoutMs = (unsigned long)(timeoutSeg * 1000.0);
+
+  visionPedirModo("AUTO");
+
+  while (millis() - inicio < timeoutMs) {
     _loop();
-    if (respuestaEscaneo) return true;
-    delay(5);
-  }
-  logPi("TIMEOUT en el escaneo de colores");
-  return false;
-}
+    if (vision.secuencia == ultimaSecuencia) {
+      delay(2);
+      continue;
+    }
+    ultimaSecuencia = vision.secuencia;
 
-// Indice del color que NO salio en esta ronda (-1 si se vieron los cinco o
-// si faltan datos). Su hueco en la zona de descarga se deja vacio.
-int colorAusente() {
-  int idx = -1, cuenta = 0;
+    if (!visionVeObjeto() || vision.color < COLOR_ROJO ||
+        vision.color > COLOR_AMARILLO ||
+        abs(vision.ex) > EX_MAX || vision.confianza < CONFIANZA_MIN) {
+      continue;
+    }
+
+    int idx = (int)vision.color;
+    if (colorCompletado[idx]) continue;
+
+    int peso = 1;
+    if (vision.confianza >= 70) peso++;
+    if (vision.area >= 600) peso++;
+    if (vision.area >= 1800) peso++;
+    votos[idx] += peso;
+    framesValidos++;
+  }
+
+  int mejor = -1;
+  int segundo = -1;
   for (int i = 0; i < 5; i++) {
-    if (!colorPresente[i]) { idx = i; cuenta++; }
+    if (mejor < 0 || votos[i] > votos[mejor]) {
+      segundo = mejor;
+      mejor = i;
+    } else if (segundo < 0 || votos[i] > votos[segundo]) {
+      segundo = i;
+    }
   }
-  return (cuenta == 1) ? idx : -1;
+
+  int votosSegundo = segundo >= 0 ? votos[segundo] : 0;
+  if (framesValidos >= 5 && mejor >= 0 && votos[mejor] >= 8 &&
+      votos[mejor] >= votosSegundo + 3) {
+    return (ColorObjeto)mejor;
+  }
+
+  logPi("color no estable");
+  return COLOR_NINGUNO;
 }
 
 // =========================================================================
-// BUCLE DE FONDO
+// BUCLE DE FONDO Y PARADA
 // =========================================================================
 
-void _loop() {
-  unsigned long tiempoActual = millis();
+void paradaEmergencia() {
+  motoresParar();
+  Encoder_1.move(0, 0);
+  Encoder_2.move(0, 0);
+  Encoder_1.setTarPWM(0);
+  Encoder_2.setTarPWM(0);
+  SERIAL_VISION.println("S 0");
 
-  static unsigned long ultimoTiempoMotores = 0;
-  if(tiempoActual - ultimoTiempoMotores >= 10) {
-    Encoder_1.loop();
-    Encoder_2.loop();
-    ultimoTiempoMotores = tiempoActual;
-  }
-
-  static unsigned long ultimoGiroscopio = 0;
-  if(tiempoActual - ultimoGiroscopio >= 25) {
-    giroscopio.update();
-    ultimoGiroscopio = tiempoActual;
-  }
-
-  visionActualizar();
-
-  if (rutinaIniciada == true && digitalRead(BOTON_PIN) == LOW) {
-    Encoder_1.move(0, 0);
-    Encoder_2.move(0, 0);
-    Encoder_1.setTarPWM(0);
-    Encoder_2.setTarPWM(0);
-    unsigned long inicioParada = millis();
-    while (true) {
-      tiempoActual = millis();
-      if (tiempoActual - inicioParada < 1500) {
-        if(tiempoActual - ultimoTiempoMotores >= 10) {
-          Encoder_1.loop();
-          Encoder_2.loop();
-          ultimoTiempoMotores = tiempoActual;
-        }
-      } else {
-        delay(500);
-      }
+  unsigned long inicio = millis();
+  while (true) {
+    if (millis() - inicio < 1200) {
+      Encoder_1.loop();
+      Encoder_2.loop();
+    } else {
+      delay(250);
     }
   }
 }
 
-void _delay(float seconds) {
-  if(seconds < 0.0) seconds = 0.0;
-  unsigned long endTime = millis() + (unsigned long)(seconds * 1000.0);
-  while(millis() < endTime) { _loop(); delay(2); }
+void _loop() {
+  unsigned long ahora = millis();
+  static unsigned long ultimoMotores = 0;
+  static unsigned long ultimoGyro = 0;
+
+  if (ahora - ultimoMotores >= 10) {
+    Encoder_1.loop();
+    Encoder_2.loop();
+    ultimoMotores = ahora;
+  }
+  if (ahora - ultimoGyro >= 20) {
+    giroscopio.update();
+    ultimoGyro = ahora;
+  }
+  visionActualizar();
+
+  if (rutinaIniciada && digitalRead(BOTON_PIN) == LOW) {
+    paradaEmergencia();
+  }
+}
+
+void _delay(float segundos) {
+  if (segundos < 0.0) segundos = 0.0;
+  unsigned long fin = millis() + (unsigned long)(segundos * 1000.0);
+  while ((long)(fin - millis()) > 0) {
+    _loop();
+    delay(2);
+  }
 }
 
 // =========================================================================
-// MOVIMIENTO (misma convencion de signos que prueba_sensores2)
+// MOVIMIENTO
 // =========================================================================
 
-void moverRobot(long gradosIzq, long gradosDer, float velocidad, float tiempoEspera) {
-  Encoder_1.move(gradosIzq, abs(velocidad));
-  Encoder_2.move(-gradosDer, abs(velocidad*1.02));
-  _delay(tiempoEspera);
+float limitar(float v, float minimo, float maximo) {
+  if (v < minimo) return minimo;
+  if (v > maximo) return maximo;
+  return v;
 }
-void avanzar(long g, float v, float t)    { moverRobot(g, g, v, t); }
-void retroceder(long g, float v, float t) { moverRobot(-g, -g, v, t); }
-void detener(float t)                     { Encoder_1.setTarPWM(0); Encoder_2.setTarPWM(0); }
 
-// Control directo de velocidad en "coordenadas logicas": + = adelante.
-// Coincide con moverRobot(): giro a la derecha => velIzq negativa, velDer positiva.
 void motoresTanque(float velIzq, float velDer) {
   Encoder_1.runSpeed(velIzq);
   Encoder_2.runSpeed(-velDer);
 }
+
 void motoresParar() {
   Encoder_1.runSpeed(0);
   Encoder_2.runSpeed(0);
 }
 
-void girarDerechaGyro(float gradosObjetivo, float velocidad) {
-  giroscopio.update();
-  float anguloInicial = giroscopio.getAngleZ();
-  Encoder_1.runSpeed(-abs(velocidad));
-  Encoder_2.runSpeed(-abs(velocidad));
-  unsigned long t0 = millis();
-  while (abs(giroscopio.getAngleZ() - anguloInicial) < gradosObjetivo) {
-    _loop();
-    if (millis() - t0 > 5000) { logPi("TIMEOUT giro derecha"); break; }
-  }
-  motoresParar();
-  _delay(0.3);
+// Movimiento de posicion usado solo donde hay una secuencia mecanica ya
+// probada. +/+ significa adelante para ambos lados.
+void moverRobot(long gradosIzq, long gradosDer, float velocidad, float espera) {
+  Encoder_1.move(gradosIzq, abs(velocidad));
+  Encoder_2.move(-gradosDer, abs(velocidad * 1.02));
+  _delay(espera);
 }
 
-void girarIzquierdaGyro(float gradosObjetivo, float velocidad) {
+void avanzar(long grados, float velocidad, float espera) {
+  moverRobot(grados, grados, velocidad, espera);
+}
+
+void retroceder(long grados, float velocidad, float espera) {
+  moverRobot(-grados, -grados, velocidad, espera);
+}
+
+// Para rutas largas usa encoder como distancia y gyro como rumbo. El signo
+// de grados define el sentido: positivo adelante, negativo atras.
+bool moverRectoGyro(long grados, float velocidad, float timeoutSeg = 8.0) {
+  if (grados == 0) return true;
+
   giroscopio.update();
-  float anguloInicial = giroscopio.getAngleZ();
-  Encoder_1.runSpeed(abs(velocidad));
-  Encoder_2.runSpeed(abs(velocidad));
-  unsigned long t0 = millis();
-  while (abs(giroscopio.getAngleZ() - anguloInicial) < gradosObjetivo) {
+  float rumbo = giroscopio.getAngleZ();
+  long inicioIzq = Encoder_1.getCurPos();
+  long inicioDer = Encoder_2.getCurPos();
+  long objetivo = abs(grados);
+  float signo = grados > 0 ? 1.0 : -1.0;
+  unsigned long inicio = millis();
+  unsigned long timeoutMs = (unsigned long)(timeoutSeg * 1000.0);
+
+  while (millis() - inicio < timeoutMs) {
     _loop();
-    if (millis() - t0 > 5000) { logPi("TIMEOUT giro izquierda"); break; }
+    long avanceIzq = labs(Encoder_1.getCurPos() - inicioIzq);
+    long avanceDer = labs(Encoder_2.getCurPos() - inicioDer);
+    long avance = (avanceIzq + avanceDer) / 2;
+    if (avance >= objetivo) {
+      motoresParar();
+      _delay(0.12);
+      return true;
+    }
+
+    long restante = objetivo - avance;
+    float base = abs(velocidad);
+    if (restante < 80) base = limitar(base * restante / 80.0, 24.0, base);
+    base *= signo;
+
+    float error = giroscopio.getAngleZ() - rumbo;
+    float correccion = limitar(error * 1.5, -18.0, 18.0);
+    if (signo < 0) correccion = -correccion;
+    motoresTanque(base - correccion, base + correccion);
+    delay(3);
   }
+
   motoresParar();
-  _delay(0.3);
+  logPi("TIMEOUT moverRectoGyro");
+  return false;
+}
+
+// sentido: +1 derecha, -1 izquierda.
+bool girarGyro(int sentido, float gradosObjetivo, float velocidadMax) {
+  giroscopio.update();
+  float inicioAngulo = giroscopio.getAngleZ();
+  unsigned long inicio = millis();
+
+  while (millis() - inicio < 5000) {
+    _loop();
+    float girado = abs(giroscopio.getAngleZ() - inicioAngulo);
+    float restante = gradosObjetivo - girado;
+    if (restante <= 0.0) {
+      motoresParar();
+      _delay(0.18);
+      return true;
+    }
+
+    float v = abs(velocidadMax);
+    if (restante < 20.0) v = limitar(v * restante / 20.0, 13.0, v);
+    if (sentido > 0) motoresTanque(-v, v);  // derecha
+    else motoresTanque(v, -v);              // izquierda
+    delay(3);
+  }
+
+  motoresParar();
+  logPi("TIMEOUT girarGyro");
+  return false;
+}
+
+bool girarDerechaGyro(float grados, float velocidad) {
+  return girarGyro(+1, grados, velocidad);
+}
+
+bool girarIzquierdaGyro(float grados, float velocidad) {
+  return girarGyro(-1, grados, velocidad);
 }
 
 // =========================================================================
-// GARRA Y PALA
+// GARRA Y PALA - ANGULOS ACTUALES DE prueba_centrales.ino
 // =========================================================================
 
 const int GARRA_ABIERTA_S1 = 0;
-const int GARRA_CERRADA_S1 = 126;
-const int GARRA_CERRADA_S2 = 50;
+const int GARRA_CERRADA_S1 = 108;
+const int GARRA_CERRADA_S2 = 58;
 const int GARRA_ABIERTA_S2 = 180;
-const int anguloBajar = 117;
 
-void abrirGarra()  { servoGarra1.write(GARRA_ABIERTA_S1); servoGarra2.write(GARRA_ABIERTA_S2); _delay(0.6); }
-void cerrarGarra() { servoGarra1.write(GARRA_CERRADA_S1); servoGarra2.write(GARRA_CERRADA_S2); _delay(0.6); }
-void bajar_pala()  { miServo.write(anguloBajar); _delay(1.0); }
-void subir_pala()  { for (int a = anguloBajar; a >= 0; a--) { miServo.write(a); _delay(0.050); } _delay(1.0); }
-void recolectar(int modo) { miServo.write(modo == 1 ? 97 : 90); _delay(1.0); }
-void posicionar()  { miServo.write(50); _delay(1.0); }
-void depositar()   { miServo.write(40); _delay(1.0); abrirGarra(); }
+const int PALA_INICIAL = 0;
+const int PALA_BAJAR = 105;
+const int PALA_MODO_1 = 63;
+const int PALA_TRANSPORTE = 120;  // antiguo recolectar(2)
+const int PALA_RECOGER = 111;     // antiguo recolectar(3)
+const int PALA_POSICIONAR = 50;
+const int PALA_DEPOSITAR = 40;
+const int PALA_BARRER = 117;
 
-// =========================================================================
-// MANIOBRAS GUIADAS POR VISION
-// =========================================================================
-
-// --- Parametros a ajustar en pista ---
-const int   VIS_TOLERANCIA_PX   = 8;    // |ex| por debajo del cual se considera centrado
-const float VIS_KP_GIRO         = 0.55; // px -> velocidad de giro
-const float VIS_VEL_GIRO_MIN    = 22;   // por debajo de esto los motores no vencen la friccion
-const float VIS_VEL_GIRO_MAX    = 55;
-const float VIS_KP_AVANCE       = 0.30; // correccion lateral mientras avanza
-const int   VIS_DIST_AGARRE_MM  = 70;   // distancia a la que el objeto entra en la garra
-const long  VIS_GRADOS_CIEGOS   = 90;   // encoder a avanzar cuando el objeto sale del encuadre
-
-float limitar(float v, float lo, float hi) { return v < lo ? lo : (v > hi ? hi : v); }
-
-// Aplica la zona muerta: mantiene el signo pero fuerza un minimo util.
-float velGiroDesdeError(int ex) {
-  float v = VIS_KP_GIRO * abs(ex);
-  v = limitar(v, VIS_VEL_GIRO_MIN, VIS_VEL_GIRO_MAX);
-  return (ex >= 0) ? v : -v;
+void abrirGarra() {
+  servoGarra1.write(GARRA_ABIERTA_S1);
+  servoGarra2.write(GARRA_ABIERTA_S2);
+  _delay(0.75);
 }
 
-/**
- * Gira sobre su eje hasta que el objeto queda alineado con la garra.
- * @return true si quedo centrado; false por timeout o por perder el objeto.
- */
-bool visionCentrar(float timeoutSeg = 4.0) {
-  unsigned long t0 = millis();
+void cerrarGarra() {
+  servoGarra1.write(GARRA_CERRADA_S1);
+  servoGarra2.write(GARRA_CERRADA_S2);
+  _delay(0.75);
+}
+
+void bajarPala() {
+  miServo.write(PALA_BAJAR);
+  _delay(0.75);
+}
+
+void recolectar(int modo) {
+  if (modo == 1) miServo.write(PALA_MODO_1);
+  else if (modo == 2) miServo.write(PALA_TRANSPORTE);
+  else miServo.write(PALA_RECOGER);
+  _delay(0.75);
+}
+
+void posicionar() {
+  miServo.write(PALA_POSICIONAR);
+  _delay(0.75);
+}
+
+void barrer() {
+  abrirGarra();
+  miServo.write(PALA_BARRER);
+  _delay(0.75);
+}
+
+// =========================================================================
+// CENTRADO Y APROXIMACION POR VISION
+// =========================================================================
+
+const int VIS_TOLERANCIA_PX = 7;
+const float VIS_KP_GIRO = 0.50;
+const float VIS_VEL_GIRO_MIN = 18;
+const float VIS_VEL_GIRO_MAX = 48;
+const float VIS_KP_AVANCE = 0.26;
+const int VIS_DIST_PRECAPTURA_MM = 110;
+const int VIS_Y_PRECAPTURA = 188;
+const long VIS_GRADOS_CIEGOS = 45;
+
+float velocidadGiroVision(int ex) {
+  float v = limitar(VIS_KP_GIRO * abs(ex), VIS_VEL_GIRO_MIN, VIS_VEL_GIRO_MAX);
+  return ex >= 0 ? v : -v;
+}
+
+bool visionCentrar(float timeoutSeg = 3.5) {
+  unsigned long inicio = millis();
   unsigned long timeoutMs = (unsigned long)(timeoutSeg * 1000.0);
-  int centradoConsecutivos = 0;
+  int consecutivos = 0;
 
-  while (millis() - t0 < timeoutMs) {
+  while (millis() - inicio < timeoutMs) {
     _loop();
-
     if (!visionVeObjeto()) {
       motoresParar();
-      delay(5);
-      continue;   // se espera a que vuelva a verlo; el timeout corta si no vuelve
+      delay(3);
+      continue;
     }
 
     if (abs(vision.ex) <= VIS_TOLERANCIA_PX) {
-      // Se exigen varias lecturas seguidas para no dar por bueno un frame suelto
-      if (++centradoConsecutivos >= 3) {
-        motoresParar();
-        _delay(0.15);
+      motoresParar();
+      if (++consecutivos >= 4) {
+        _delay(0.12);
         return true;
       }
     } else {
-      centradoConsecutivos = 0;
+      consecutivos = 0;
+      float v = velocidadGiroVision(vision.ex);
+      motoresTanque(-v, v);
     }
-
-    float v = velGiroDesdeError(vision.ex);
-    motoresTanque(-v, v);   // ex>0 (objeto a la derecha) => giro a la derecha
-    delay(5);
+    delay(3);
   }
 
   motoresParar();
@@ -386,168 +533,289 @@ bool visionCentrar(float timeoutSeg = 4.0) {
   return false;
 }
 
-/**
- * Barre girando sobre su eje hasta encontrar el objeto del color activo.
- * Hace un barrido a la derecha y, si no lo halla, uno mas amplio a la izquierda.
- */
-bool visionBuscar(float gradosBarrido = 60.0, float velocidad = 30.0) {
+bool visionBuscar(float gradosBarrido = 35.0, float velocidad = 24.0) {
   for (int fase = 0; fase < 3; fase++) {
-    // fase 0: derecha; fase 1: izquierda (doble recorrido); fase 2: volver
-    float signo = (fase == 0) ? -1.0 : 1.0;
-    float limite = (fase == 1) ? gradosBarrido * 2.0 : gradosBarrido;
-    if (fase == 2) { signo = -1.0; limite = gradosBarrido; }
+    int sentido = fase == 0 ? +1 : -1;
+    float limite = fase == 1 ? gradosBarrido * 2.0 : gradosBarrido;
+    if (fase == 2) sentido = +1;
 
     giroscopio.update();
-    float aFase = giroscopio.getAngleZ();
-    Encoder_1.runSpeed(signo * abs(velocidad));
-    Encoder_2.runSpeed(signo * abs(velocidad));
-
-    unsigned long t0 = millis();
-    while (abs(giroscopio.getAngleZ() - aFase) < limite) {
+    float inicioAngulo = giroscopio.getAngleZ();
+    unsigned long inicio = millis();
+    while (abs(giroscopio.getAngleZ() - inicioAngulo) < limite &&
+           millis() - inicio < 3500) {
       _loop();
       if (visionVeObjeto()) {
         motoresParar();
-        _delay(0.2);
+        _delay(0.12);
         return true;
       }
-      if (millis() - t0 > 6000) break;
+      if (sentido > 0) motoresTanque(-velocidad, velocidad);
+      else motoresTanque(velocidad, -velocidad);
+      delay(3);
     }
     motoresParar();
-    _delay(0.2);
+    _delay(0.10);
   }
-
-  logPi("visionBuscar: objeto no encontrado");
   return false;
 }
 
-/**
- * Avanza hacia el objeto corrigiendo la direccion con el error de vision.
- * Se detiene al llegar a distObjetivoMm, o cuando el objeto sale del encuadre
- * (lo normal cuando ya esta muy cerca: la camara deja de verlo).
- *
- * @return true si llego a distancia de agarre.
- */
-bool visionAproximar(int distObjetivoMm = VIS_DIST_AGARRE_MM,
-                     float velocidad = 45.0, float timeoutSeg = 8.0) {
-  unsigned long t0 = millis();
+bool visionAproximar(int distObjetivoMm, float velocidad, float timeoutSeg) {
+  unsigned long inicio = millis();
+  unsigned long ultimoVisto = millis();
   unsigned long timeoutMs = (unsigned long)(timeoutSeg * 1000.0);
-  unsigned long tUltimoVisto = millis();
   int ultimaDist = -1;
+  int ultimoEy = 0;
 
-  while (millis() - t0 < timeoutMs) {
+  while (millis() - inicio < timeoutMs) {
     _loop();
-
     if (visionVeObjeto()) {
-      tUltimoVisto = millis();
+      ultimoVisto = millis();
       ultimaDist = vision.dist;
+      ultimoEy = vision.ey;
 
-      if (vision.dist > 0 && vision.dist <= distObjetivoMm) {
+      if ((vision.dist > 0 && vision.dist <= distObjetivoMm) ||
+          vision.ey >= VIS_Y_PRECAPTURA) {
         motoresParar();
-        _delay(0.15);
+        _delay(0.12);
         return true;
       }
 
-      // Frena progresivamente en los ultimos 15 cm para no empujar el objeto
-      float vel = velocidad;
-      if (vision.dist > 0 && vision.dist < 150) {
-        vel = limitar(velocidad * (vision.dist / 150.0), 25.0, velocidad);
+      float v = velocidad;
+      if (vision.dist > 0 && vision.dist < 180) {
+        v = limitar(velocidad * vision.dist / 180.0, 24.0, velocidad);
       }
-
-      float corr = limitar(VIS_KP_AVANCE * vision.ex, -vel * 0.7, vel * 0.7);
-      motoresTanque(vel - corr, vel + corr);
+      float corr = limitar(VIS_KP_AVANCE * vision.ex, -v * 0.65, v * 0.65);
+      motoresTanque(v - corr, v + corr);
     } else {
-      // Si lo perdio estando ya cerca, es que entro en la zona ciega de la
-      // camara: se avanza a ciegas lo justo para meterlo en la garra.
-      if (ultimaDist > 0 && ultimaDist < 160) {
+      if ((ultimaDist > 0 && ultimaDist < 165) || ultimoEy > 172) {
         motoresParar();
-        _delay(0.1);
-        logPi("objeto en zona ciega: avance final por encoder");
-        avanzar(VIS_GRADOS_CIEGOS, 30, 1.5);
+        avanzar(VIS_GRADOS_CIEGOS, 28, 1.0);
         return true;
       }
-      // Si lo perdio lejos, sigue recto un momento por si fue un parpadeo
-      if (millis() - tUltimoVisto > 500) {
+      if (millis() - ultimoVisto > 450) {
         motoresParar();
-        logPi("objeto perdido durante la aproximacion");
         return false;
       }
-      motoresTanque(velocidad * 0.6, velocidad * 0.6);
+      motoresTanque(velocidad * 0.50, velocidad * 0.50);
     }
-    delay(5);
+    delay(3);
   }
 
   motoresParar();
-  logPi("TIMEOUT visionAproximar");
   return false;
 }
 
-/**
- * Secuencia completa: buscar -> centrar -> aproximar -> agarrar.
- */
-bool recogerObjetoPorVision(const char* color) {
+bool prepararCapturaPorVision(ColorObjeto color) {
+  abrirGarra();
+  recolectar(3);
   visionPedirColor(color);
-  _delay(0.4);   // la Pi necesita un par de frames con el color nuevo
+  _delay(0.25);
 
-  if (!visionVeObjeto(600)) {
-    if (!visionBuscar()) return false;
+  if (!visionVeObjeto(600) && !visionBuscar()) {
+    logPi("artefacto no encontrado");
+    return false;
+  }
+  if (!visionCentrar()) return false;
+  if (!visionAproximar(180, 44.0, 5.5)) return false;
+  visionCentrar(1.8);
+  return visionAproximar(VIS_DIST_PRECAPTURA_MM, 30.0, 4.0);
+}
+
+// Esta es la secuencia de agarre de prueba_centrales. Se ejecuta despues de
+// que vision deja el artefacto en la misma pose inicial para la cual se afino.
+void capturarConRutinaProbada() {
+  bajarPala();
+  cerrarGarra();
+  retroceder(120, 25, 1.8);
+  _delay(0.25);
+  abrirGarra();
+  recolectar(3);
+  avanzar(90, 55, 1.0);
+  cerrarGarra();
+  bajarPala();
+  retroceder(360, 35, 3.5);
+  motoresParar();
+}
+
+// =========================================================================
+// GEOMETRIA DE LA PISTA Y CICLO DE CUATRO ARTEFACTOS
+// =========================================================================
+
+// CALIBRAR. Centros de los cuatro cuadros negros separados aproximadamente
+// 130 mm en la pista oficial. El valor depende del diametro real de rueda.
+const long PASO_SLOT_GRADOS = 220;
+const long OFFSET_SLOT_GRADOS[4] = {
+  -(PASO_SLOT_GRADOS * 3L) / 2L,
+  -PASO_SLOT_GRADOS / 2L,
+  PASO_SLOT_GRADOS / 2L,
+  (PASO_SLOT_GRADOS * 3L) / 2L
+};
+
+// Primero los dos slots centrales y luego los exteriores.
+const byte ORDEN_SLOTS[4] = {1, 2, 0, 3};
+
+// Trayecto heredado de la prueba verde que ya llega al museo.
+const float GIRO_SALIDA_1 = 88.0;
+const float GIRO_SALIDA_2 = 89.0;
+const long RUTA_CRUCE_GRADOS = 128;
+const long RUTA_HASTA_STAGING_GRADOS = 500;  // 680 - aproximacion final
+const long APROX_MUSEO_GRADOS = 180;
+
+// La ruta verde es la referencia. Los exhibidores estan en el orden oficial
+// ROJO, VERDE, NEGRO, AZUL, AMARILLO, de izquierda a derecha.
+const int DESTINO_REFERENCIA = COLOR_VERDE;
+const long PASO_MUSEO_GRADOS = 205;  // CALIBRAR
+
+// Poner temporalmente en 1 durante la primera prueba de banco/pista.
+const byte NUM_ARTEFACTOS_OBJETIVO = 4;
+const unsigned long LIMITE_RUTINA_MS = 116000UL;
+const unsigned long RESERVA_NUEVO_CICLO_MS = 26000UL;
+
+bool quedaTiempo(unsigned long reservaMs) {
+  return millis() - inicioRutinaMs + reservaMs < LIMITE_RUTINA_MS;
+}
+
+// Desplazamiento perpendicular al rumbo actual; termina con el mismo rumbo.
+bool desplazarLateral(long grados) {
+  if (grados == 0) return true;
+  bool ok = true;
+  if (grados < 0) {
+    ok &= girarIzquierdaGyro(89.0, 22.0);
+    ok &= moverRectoGyro(-grados, 42.0, 5.0);
+    ok &= girarDerechaGyro(89.0, 22.0);
+  } else {
+    ok &= girarDerechaGyro(89.0, 22.0);
+    ok &= moverRectoGyro(grados, 42.0, 5.0);
+    ok &= girarIzquierdaGyro(89.0, 22.0);
+  }
+  return ok;
+}
+
+bool irCentroASlot(byte slot) {
+  if (slot > 3) return false;
+  return desplazarLateral(OFFSET_SLOT_GRADOS[slot]);
+}
+
+bool volverSlotACentro(byte slot) {
+  if (slot > 3) return false;
+  return desplazarLateral(-OFFSET_SLOT_GRADOS[slot]);
+}
+
+bool irCentroAStagingMuseo() {
+  bool ok = true;
+  ok &= girarIzquierdaGyro(GIRO_SALIDA_1, 18.0);
+  ok &= moverRectoGyro(RUTA_CRUCE_GRADOS, 43.0, 3.5);
+  ok &= girarIzquierdaGyro(GIRO_SALIDA_2, 21.0);
+  ok &= moverRectoGyro(RUTA_HASTA_STAGING_GRADOS, 62.0, 6.0);
+  return ok;
+}
+
+bool volverStagingACentro() {
+  bool ok = true;
+  ok &= moverRectoGyro(-RUTA_HASTA_STAGING_GRADOS, 68.0, 6.0);
+  ok &= girarDerechaGyro(GIRO_SALIDA_2, 23.0);
+  ok &= moverRectoGyro(-RUTA_CRUCE_GRADOS, 48.0, 3.5);
+  ok &= girarDerechaGyro(GIRO_SALIDA_1, 23.0);
+  return ok;
+}
+
+long offsetDestino(ColorObjeto color) {
+  if (color < COLOR_ROJO || color > COLOR_AMARILLO) return 0;
+  return ((long)((int)color - DESTINO_REFERENCIA)) * PASO_MUSEO_GRADOS;
+}
+
+// La deposicion probada termina 45 grados mas atras que la pose de llegada:
+// -23 +68 -90 = -45.
+const long RETROCESO_NETO_DEPOSITO = 45;
+
+void depositarConRutinaProbada() {
+  recolectar(2);
+  retroceder(23, 26, 1.0);
+  recolectar(3);
+  abrirGarra();
+  barrer();
+  avanzar(68, 36, 0.75);
+  retroceder(90, 28, 1.0);
+  recolectar(3);
+}
+
+bool depositarColorDesdeStaging(ColorObjeto color) {
+  long lateral = offsetDestino(color);
+  bool ok = true;
+  ok &= desplazarLateral(lateral);
+  ok &= moverRectoGyro(APROX_MUSEO_GRADOS, 38.0, 4.0);
+  if (!ok) return false;
+
+  depositarConRutinaProbada();
+
+  long retirada = APROX_MUSEO_GRADOS - RETROCESO_NETO_DEPOSITO;
+  if (retirada > 0) ok &= moverRectoGyro(-retirada, 42.0, 4.0);
+  ok &= desplazarLateral(-lateral);
+  return ok;
+}
+
+void imprimirMapaSlots() {
+  logPi("mapa incremental de slots:");
+  for (int i = 0; i < 4; i++) {
+    SERIAL_VISION.print("#slot ");
+    SERIAL_VISION.print(i);
+    SERIAL_VISION.print(" = ");
+    if (colorEnSlot[i] == COLOR_NINGUNO) SERIAL_VISION.println("?");
+    else SERIAL_VISION.println(NOMBRES_COLOR[(int)colorEnSlot[i]]);
+  }
+}
+
+bool procesarSlot(byte slot) {
+  SERIAL_VISION.print("#visitando slot ");
+  SERIAL_VISION.println(slot);
+
+  if (!irCentroASlot(slot)) {
+    falloNavegacion = true;
+    return false;
   }
 
-  abrirGarra();
-  bajar_pala();
+  ColorObjeto color = visionIdentificarColor(1.8);
+  if (color == COLOR_NINGUNO) {
+    color = visionIdentificarColor(1.5);
+  }
 
-  // Dos pasadas: centrar de lejos, acercarse, y refinar el centrado de cerca,
-  // donde un error de pocos pixeles ya son varios milimetros.
-  if (!visionCentrar()) return false;
-  if (!visionAproximar(180, 50.0)) return false;
-  visionCentrar(2.0);
-  if (!visionAproximar(VIS_DIST_AGARRE_MM, 32.0, 5.0)) return false;
+  colorEnSlot[slot] = color;
+  if (color == COLOR_NINGUNO) {
+    logPi("slot sin identidad; se omite");
+    if (!volverSlotACentro(slot)) falloNavegacion = true;
+    return false;
+  }
+  logColor("identificado: ", color);
 
-  cerrarGarra();
-  recolectar(2);
+  if (!prepararCapturaPorVision(color)) {
+    logPi("fallo en aproximacion; recuperando");
+    moverRectoGyro(-180, 34.0, 3.0);
+    if (!volverSlotACentro(slot)) falloNavegacion = true;
+    // Tras una aproximacion fallida la profundidad exacta ya no es fiable.
+    // Se despeja la fila, pero no se inicia otro ciclo a ciegas.
+    falloNavegacion = true;
+    return false;
+  }
+
+  capturarConRutinaProbada();
+  if (!volverSlotACentro(slot) || !irCentroAStagingMuseo() ||
+      !depositarColorDesdeStaging(color)) {
+    falloNavegacion = true;
+    return false;
+  }
+
+  colorCompletado[(int)color] = true;
+  logColor("depositado: ", color);
   return true;
 }
 
 // =========================================================================
-// ZONA DE DESCARGA
-// =========================================================================
-//
-// Los cinco huecos van de izquierda a derecha en el orden de ORDEN_COLORES.
-// Como cada color tiene su hueco fijo, el del color ausente simplemente se
-// queda vacio: no hay que compactar ni recalcular nada.
-//
-// POS_DESCARGA_GRADOS son los grados de encoder desde el borde IZQUIERDO de
-// la zona hasta el centro de cada hueco. HAY QUE MEDIRLOS EN LA PISTA:
-// coloca el robot alineado con el hueco 0, pon el contador a cero y avanza
-// lateralmente hasta cada hueco anotando el valor.
-const long POS_DESCARGA_GRADOS[5] = {0, 150, 300, 450, 600};
-
-/**
- * Lleva el objeto ya sujetado al hueco que le toca a su color.
- * @param idxColor indice dentro de ORDEN_COLORES (0 = rojo ... 4 = amarillo)
- * @param gradosActuales posicion lateral actual del robot en la zona
- * @return los grados en los que queda el robot, para encadenar el siguiente
- */
-long depositarEnHueco(int idxColor, long gradosActuales) {
-  if (idxColor < 0 || idxColor > 4) return gradosActuales;
-
-  long objetivo = POS_DESCARGA_GRADOS[idxColor];
-  long delta = objetivo - gradosActuales;
-
-  if (delta > 0)      avanzar(delta, 55, 2.5);
-  else if (delta < 0) retroceder(-delta, 55, 2.5);
-
-  posicionar();
-  depositar();
-  _delay(0.3);
-
-  return objetivo;
-}
-
+// SETUP Y PROGRAMA PRINCIPAL
 // =========================================================================
 
 void setup() {
   SERIAL_VISION.begin(BAUD_VISION);
-
   pinMode(BOTON_PIN, INPUT_PULLUP);
   pinMode(PIN_TCRT_IZQ, INPUT);
   pinMode(PIN_TCRT_DER, INPUT);
@@ -556,10 +824,10 @@ void setup() {
   giroscopio.begin();
   _delay(2.0);
 
-  miServo.attach(pinServo);
+  miServo.attach(PIN_SERVO_PALA);
   servoGarra1.attach(placaExpansora.pin1());
   servoGarra2.attach(placaExpansora.pin2());
-  miServo.write(0);
+  miServo.write(PALA_INICIAL);
   abrirGarra();
 
   TCCR1A = _BV(WGM10);
@@ -570,97 +838,59 @@ void setup() {
   attachInterrupt(Encoder_1.getIntNum(), isr_process_encoder1, RISING);
   Encoder_1.setPulse(8);
   Encoder_1.setRatio(46.67);
-  Encoder_1.setPosPid(1.8,0,1.2);
-  Encoder_1.setSpeedPid(0.18,0,0);
+  Encoder_1.setPosPid(1.8, 0, 1.2);
+  Encoder_1.setSpeedPid(0.18, 0, 0);
 
   attachInterrupt(Encoder_2.getIntNum(), isr_process_encoder2, RISING);
   Encoder_2.setPulse(8);
   Encoder_2.setRatio(46.67);
-  Encoder_2.setPosPid(1.8,0,1.2);
-  Encoder_2.setSpeedPid(0.18,0,0);
+  Encoder_2.setPosPid(1.8, 0, 1.2);
+  Encoder_2.setSpeedPid(0.18, 0, 0);
 
-  logPi("MegaPi lista");
+  logPi("MegaPi lista; esperando boton");
 }
 
 void loop() {
-  // 1. Esperar el boton
-  while (digitalRead(BOTON_PIN) == HIGH) { _loop(); }
-  while (digitalRead(BOTON_PIN) == LOW)  { _loop(); }
-  _delay(0.5);
+  while (digitalRead(BOTON_PIN) == HIGH) _loop();
+  while (digitalRead(BOTON_PIN) == LOW) _loop();
+  _delay(0.45);
+
   rutinaIniciada = true;
+  inicioRutinaMs = millis();
+  SERIAL_VISION.println("S 1");
 
-  // 2. Comprobar que la Raspberry esta enviando datos antes de arrancar
-  if (!visionViva(1000)) {
-    logPi("AVISO: sin datos de la Raspberry");
-  }
+  unsigned long esperaPi = millis();
+  while (!visionViva(1000) && millis() - esperaPi < 2200) _loop();
+  if (!visionViva(1000)) logPi("AVISO: enlace de vision no confirmado");
 
-  // ==========================================
-  // RUTINA DE PRUEBA
-  // ==========================================
-  //
-  // Paso 1: averiguar que cuatro colores salieron en esta ronda.
-  // Hazlo desde un punto donde se vean los objetos; si desde el cuadro de
-  // inicio no se ven todos, muevete primero y escanea despues.
-  if (visionEscanearColores()) {
-    for (int i = 0; i < 5; i++) {
-      SERIAL_VISION.print('#');
-      SERIAL_VISION.print(ORDEN_COLORES[i]);
-      SERIAL_VISION.println(colorPresente[i] ? ": presente" : ": NO salio");
+  for (int intento = 0; intento < NUM_ARTEFACTOS_OBJETIVO; intento++) {
+    if (!quedaTiempo(RESERVA_NUEVO_CICLO_MS)) {
+      logPi("sin tiempo seguro para otro artefacto");
+      break;
     }
-    int ausente = colorAusente();
-    if (ausente >= 0) {
-      SERIAL_VISION.print("#hueco vacio: ");
-      SERIAL_VISION.println(ORDEN_COLORES[ausente]);
+
+    byte slot = ORDEN_SLOTS[intento];
+    bool depositado = procesarSlot(slot);
+    if (falloNavegacion) {
+      logPi("fallo critico de navegacion; fin seguro");
+      break;
     }
-  }
 
-  // Paso 2: recoger y depositar cada color presente, en el orden de la zona.
-  long posLateral = 0;
-  for (int i = 0; i < 5; i++) {
-    if (!colorPresente[i]) continue;
-
-    if (recogerObjetoPorVision(ORDEN_COLORES[i])) {
-      SERIAL_VISION.print("#capturado: ");
-      SERIAL_VISION.println(ORDEN_COLORES[i]);
-      // Aqui falta el traslado desde donde este el robot hasta el borde
-      // izquierdo de la zona de descarga; eso depende de tu recorrido.
-      posLateral = depositarEnHueco(i, posLateral);
+    if (intento + 1 < NUM_ARTEFACTOS_OBJETIVO &&
+        quedaTiempo(RESERVA_NUEVO_CICLO_MS)) {
+      if (depositado && !volverStagingACentro()) break;
+      // Si fallo antes de llegar al museo, procesarSlot ya regreso al centro.
     } else {
-      SERIAL_VISION.print("#fallo al capturar: ");
-      SERIAL_VISION.println(ORDEN_COLORES[i]);
+      break;
     }
   }
 
-  detener(0.5);
-  while(1) { _loop(); }
+  imprimirMapaSlots();
+  motoresParar();
+  SERIAL_VISION.println("S 0");
+  logPi("rutina finalizada");
+  while (true) {
+    _loop();
+    delay(20);
+  }
 }
-
-// =========================================================================
-// NOTAS DE CABLEADO
-// =========================================================================
-//
-// OPCION A (recomendada) - USB
-//   Cable USB tipo A-B desde la Raspberry al conector de programacion de la
-//   MegaPi. SERIAL_VISION = Serial. En la Pi el puerto sera /dev/ttyUSB0.
-//   Ventajas: sin conversion de niveles, alimentacion y datos por un cable,
-//   se puede seguir programando la placa por el mismo puerto.
-//   Ojo: al abrir el puerto la Pi resetea la MegaPi (por eso el script espera
-//   2.5 s). Si no quieres ese reset, pon "evitar_reset_dtr": true en config.json.
-//
-// OPCION B - UART por pines (TX2 = 16, RX2 = 17)
-//   SERIAL_VISION = Serial2.
-//     Pi GPIO14 (TX, pin 8)  --> MegaPi RX2 (17)     directo, 3.3V basta
-//     Pi GPIO15 (RX, pin 10) <-- MegaPi TX2 (16)     CON DIVISOR: 5V danan la Pi
-//        MegaPi TX2 --[1k]--+--[2k]-- GND
-//                           +--> Pi GPIO15
-//     GND de la Pi --- GND de la MegaPi   (obligatorio)
-//   Y en la Pi: sudo raspi-config -> Interface -> Serial ->
-//     login shell por serie NO, hardware serial SI. El puerto es /dev/serial0.
-//   Verifica primero que los pines 16/17 esten libres: en este proyecto el
-//   puerto RJ25 numero 7 se usa para los servos de la garra, y en la MegaPi
-//   algunos puertos RJ25 comparten pines con los UART. Antes de cablear,
-//   confirma que servoGarra1/2 no queden en 16/17 imprimiendo
-//   placaExpansora.pin1() y pin2() en el setup.
-//
-// NUNCA alimentes la Raspberry Pi 3B desde la MegaPi: necesita hasta 2.5 A.
-// Usa una power bank independiente y comparte solo la masa.
