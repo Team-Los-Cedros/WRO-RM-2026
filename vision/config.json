@@ -9,17 +9,19 @@
     "voltear_180": false,
     "roi_y": [0.30, 1.00],
     "auto_exposicion": false,
-    "exposicion_absoluta": 150,
+    "exposicion_absoluta": 750,
     "auto_balance_blancos": false,
     "temperatura_color": 4500,
     "frecuencia_red_hz": 60,
-    "ganancia": 0,
-    "brillo": null,
-    "contraste": null,
-    "saturacion": null,
+    "ganancia": 25,
+    "brillo": 12,
+    "contraste": 33,
+    "saturacion": 68,
+    "gamma": 100,
+    "sharpness": 2,
 
     "_nota_fps": "Medido en esta Pi 3B: la camara entrega 20 fps reales. NO pongas buffers en 1: el driver descarta un frame de cada dos y bajas a 10 fps.",
-    "_nota_roi": "roi_y recorta la franja superior de la imagen. Con la camara en lo alto del robot mirando ligeramente hacia abajo, el objeto siempre cae en la mitad inferior; recortar ahorra CPU y evita detectar cosas fuera de la pista."
+    "_nota_roi": "Calibrada para incluir la fila de artefactos desde la pose inicial. y_base_max_frac y zonas_ignoradas evitan que el suelo y la garra se conviertan en el contorno dominante."
   },
 
   "serial": {
@@ -49,7 +51,14 @@
     "kernel_morfologia": 3,
     "relacion_aspecto_max": 4.0,
     "alto_min_px": 8,
-    "color_inicial": "ROJO"
+    "y_base_max_frac": 0.86,
+    "auto_ex_max_px": 110,
+    "zonas_ignoradas": [
+      [0.18, 0.70, 0.33, 1.00],
+      [0.65, 0.70, 0.80, 1.00]
+    ],
+    "color_inicial": "AUTO",
+    "_nota_zonas": "Las dos zonas cubren los dedos azules de la garra en la imagen 320x240. Ajustarlas si cambia la camara o el soporte."
   },
 
   "colores": {

@@ -87,10 +87,10 @@ def main():
             hz = len(tramas) / 3.0
             check(hz >= 12, "frecuencia >= 12 Hz (medido %.1f Hz)" % hz)
             campos = tramas[-1].split()
-            check(len(campos) == 8, "la trama tiene 8 campos", tramas[-1])
+            check(len(campos) == 9, "la trama tiene 9 campos", tramas[-1])
             check(campos[1] in ("0", "1"), "campo found es 0 o 1", tramas[-1])
             try:
-                int(campos[3]); int(campos[4]); int(campos[5]); int(campos[6])
+                int(campos[3]); int(campos[4]); int(campos[5]); int(campos[6]); int(campos[8])
                 ok_num = True
             except ValueError:
                 ok_num = False
@@ -114,12 +114,23 @@ def main():
               "las tramas pasan a reportar VERDE",
               tras[-1] if tras else "sin tramas")
 
-        print("\n4. Comando C con un color inexistente")
+        print("\n4. Comando C AUTO (identificacion por color)")
+        os.write(maestro, b"C AUTO\n")
+        resp = leer_lineas(maestro, 2.0, hasta="K COLOR")
+        check(any(l.startswith("K COLOR AUTO") for l in resp),
+              "acepta el modo automatico")
+        tras = [l for l in leer_lineas(maestro, 1.0) if l.startswith("T ")]
+        colores_auto = {"ROJO", "VERDE", "NEGRO", "AZUL", "AMARILLO", "NINGUNO"}
+        check(bool(tras) and all(l.split()[2] in colores_auto for l in tras),
+              "AUTO devuelve un color valido o NINGUNO",
+              tras[-1] if tras else "sin tramas")
+
+        print("\n5. Comando C con un color inexistente")
         os.write(maestro, b"C MORADO\n")
         resp = leer_lineas(maestro, 2.0, hasta="E COLOR")
         check(any(l.startswith("E COLOR") for l in resp), "rechaza un color desconocido")
 
-        print("\n5. Comando X (escaneo de los cinco colores)")
+        print("\n6. Comando X (escaneo de los cinco colores)")
         os.write(maestro, b"X\n")
         resp = leer_lineas(maestro, 3.0, hasta="X ")
         xs = [l for l in resp if l.startswith("X ")]
@@ -133,7 +144,7 @@ def main():
             check(len(xs[0]) < 128, "la respuesta cabe en el buffer de 128 B del Arduino (%d B)" % len(xs[0]))
             print("     %s" % xs[0])
 
-        print("\n6. Comando S (apagar y encender el envio)")
+        print("\n7. Comando S (apagar y encender el envio)")
         os.write(maestro, b"S 0\n")
         leer_lineas(maestro, 1.0)
         quietas = [l for l in leer_lineas(maestro, 1.5) if l.startswith("T ")]
@@ -142,7 +153,7 @@ def main():
         vuelven = [l for l in leer_lineas(maestro, 1.5) if l.startswith("T ")]
         check(len(vuelven) > 0, "con S 1 vuelve a enviar")
 
-        print("\n7. Log de la MegaPi con prefijo #")
+        print("\n8. Log de la MegaPi con prefijo #")
         os.write(maestro, b"#hola desde la MegaPi\n")
         time.sleep(0.5)
         check(True, "aceptado sin romper el protocolo")

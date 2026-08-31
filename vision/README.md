@@ -1,234 +1,270 @@
-# Visión con Raspberry Pi 3B para el robot WRO RoboMission 2026
+# Visión y ciclo de cuatro artefactos - WRO RoboMission Junior 2026
 
-La Raspberry Pi actúa como **sensor inteligente**: mira por la webcam USB, encuentra
-el objeto del color pedido y le manda a la MegaPi el error de posición. La MegaPi
-sigue siendo el cerebro que decide la rutina — así el robot nunca depende de que
-la Pi arranque a tiempo, y si la Pi falla la rutina por encoders sigue funcionando.
+La Raspberry Pi reconoce y localiza artefactos; la MegaPi conserva el control de
+motores, encoders, giroscopio, garra, secuencia y parada física.
 
-```
- webcam USB ──► Raspberry Pi 3B ──serial 115200──► MegaPi ──► motores / garra
-                (OpenCV, HSV)      "T 1 ROJO -34 ..."        (encoders + giroscopio)
+```text
+webcam USB -> Raspberry Pi 3B -> USB serial 115200 -> MegaPi -> robot
+              OpenCV / HSV       T 1 VERDE ...        navegación y garra
 ```
 
----
+El sketch coordinado está en
+[`robot_WRO/prueba_vision/prueba_vision.ino`](../robot_WRO/prueba_vision/prueba_vision.ino).
 
-## 0. Estado de esta Raspberry (verificado el 2026-08-01)
+## Qué cambió
 
-| | |
+- `C AUTO` reconoce el color que está alineado con la garra; después la MegaPi
+  fija `C <COLOR>` para que el seguimiento no cambie durante el acercamiento.
+- La identidad se vota durante varios frames. Área y confianza pesan en el voto
+  para que piezas amarillas pequeñas del modelo verde no cambien su identidad.
+- Se ignoran dos rectángulos inferiores que corresponden a los dedos azules de
+  la garra. Antes eran detectados como un supuesto artefacto azul.
+- Se consideran todos los contornos plausibles y se elige por centro, forma y
+  área; ya no se acepta ciegamente el contorno más grande. Esto evita que una
+  zona verde impresa en la pista gane al artefacto verde.
+- El robot visita cuatro posiciones físicas conocidas (`slots`), guarda
+  `slot -> color`, recoge, entrega y regresa por la ruta inversa.
+- Los desplazamientos laterales del museo se hacen desde una línea de espera
+  alejada. Solo entonces se avanza perpendicularmente hacia el exhibidor; así
+  la garra no barre artefactos ya colocados.
+- Los ángulos vigentes de la garra y la pala se copiaron de la rutina probada
+  `prueba_centrales.ino`: cierre `108/58`, bajar `105`, transporte `120`,
+  recoger `111`, posicionar `50`, depositar `40` y barrer `117` grados.
+- Un límite interno de 116 s evita iniciar un ciclo que no tenga margen dentro
+  de los 120 s reglamentarios.
+
+## Algoritmo de una ronda
+
+El robot inicia en el área blanca, centrado entre los cuatro cuadros de
+artefactos y mirando hacia ellos. Los slots se numeran de izquierda a derecha
+`0, 1, 2, 3` desde su perspectiva.
+
+1. Visita los slots en orden `1, 2, 0, 3` para resolver primero los más cercanos.
+2. Hace un desplazamiento en L, queda mirando perpendicularmente al slot y pide
+   `C AUTO`.
+3. Vota el color durante 1.8 s y guarda la posición conocida del slot.
+4. Fija ese color, centra por `ex`, avanza con corrección proporcional y usa
+   `ey/dist` para detenerse en la pose de precaptura.
+5. Ejecuta la secuencia mecánica que ya funcionaba para sacar y reacomodar el
+   artefacto en la garra.
+6. Deshace la L, toma la ruta probada al museo y se detiene antes de los
+   exhibidores.
+7. Se desplaza lateralmente según el destino fijo
+   `ROJO, VERDE, NEGRO, AZUL, AMARILLO`, avanza, deposita, retrocede y deshace
+   el desplazamiento lateral.
+8. Regresa exactamente por la transformación inversa y continúa con otro slot.
+
+No se necesita conocer de antemano cuál de los cinco colores quedó fuera de la
+ronda. Cada objeto revela su destino justo antes de recogerlo. El comando `X`
+se mantiene como diagnóstico de lo visible en un frame, pero no se usa como
+mapa global porque desde el inicio la cámara solo alcanza a ver dos objetos.
+
+## Estado de la Raspberry verificado el 31-08-2026
+
+| Componente | Estado |
 |---|---|
-| Modelo | Raspberry Pi 3 Model B Rev 1.2, 905 MB RAM |
-| Sistema | Debian 13 (trixie), arm64, hostname `clc-wro-rm` |
-| Python | 3.13.5 · OpenCV 4.10.0 · numpy 2.2.4 · pyserial 3.5 |
-| Cámara | `USB Camera` 32e6:9221 en `/dev/video0`, MJPG hasta 1920×1080 |
-| Ya instalado | `python3-opencv`, `v4l-utils`, `fswebcam` (con esta tomaste la foto) |
+| Host | `clc-wro-rm`, Raspberry Pi 3B, Debian 13 arm64 |
+| Dirección de desarrollo | `192.168.0.166` |
+| Cámara | USB Camera en `/dev/video0`, 20 fps reales a 320x240 |
+| Servicio | El archivo existe en el proyecto, pero la unidad no estaba instalada |
+| Enlace MegaPi | `/dev/ttyUSB0`; estaba desconectada durante esta verificación |
 
-**No hace falta instalar nada.** `install.sh` está para reinstalar en otra tarjeta.
-`fswebcam` no lo usa este sistema; OpenCV habla con la cámara por V4L2 directamente.
+La calibración vigente extraída al repositorio fija exposición `750`,
+temperatura `4500`, ganancia `25`, brillo `12`, contraste `33`, saturación `68`,
+gamma `100` y nitidez `2`. Esos valores se conservaron en `config.json`; son una
+base, no sustituyen la calibración con la luz del evento.
 
-### ⚠ Problema de alimentación pendiente
+## Probar sin mover el robot
 
-```
-throttled=0x50005     under-voltage AHORA + throttling AHORA
-frequency(arm)=600 MHz    (la Pi 3B debería ir a 1200 MHz)
-55 eventos de undervoltage desde el arranque
-```
-
-La Pi está corriendo **a la mitad de su velocidad** por falta de corriente, y el
-USB da errores (`Failed to resubmit video URB`, frames MJPEG corruptos). Necesita
-una fuente de **5 V / 2.5 A real** (o una power bank que entregue 2.5 A) y un cable
-micro-USB corto y grueso — los cables finos son la causa más común. Compruébalo con:
+En la Raspberry, con la MegaPi desconectada:
 
 ```bash
-vcgencmd get_throttled
+cd /home/pi/WRO-RM-2026/vision
+python3 vision_server.py --sin-serial --web --color AUTO
 ```
 
-`0x0` es lo correcto. Cualquier otra cosa significa que el rendimiento no es real.
-Aun así, el sistema **funciona a 20 fps incluso throttled**, así que no bloquea el
-desarrollo; pero no lleves el robot a competir en este estado.
+El overlay queda en `http://192.168.0.166:8080`. La consola debe emitir:
 
-## 1. Instalación en otra tarjeta
-
-```bash
-bash /home/pi/vision/install.sh
+```text
+T 1 AMARILLO -12 105 2632 310 20 86
+T 0 NINGUNO 0 0 0 -1 20 0
 ```
 
-Instala `python3-opencv`, `python3-serial` y `v4l-utils` desde los repos de Debian.
-**No uses `pip install opencv-python`** en una Pi 3B: intenta compilar desde fuente
-y tarda horas.
-
-## 2. Calibrar
-
-Todo se calibra desde el navegador de tu PC, sin monitor en la Pi.
+Pruebas sin cámara ni MegaPi:
 
 ```bash
-python3 /home/pi/vision/calibrar_web.py
+python3 test_detector.py
+python3 -m py_compile vision_core.py vision_server.py test_protocolo.py
 ```
 
-Abre `http://192.168.0.174:8081`. Verás la imagen real y la máscara del color, con
-sliders HSV.
-
-**Orden de calibración:**
-
-1. **Color** — mueve los sliders hasta que la máscara marque *sólo* el objeto.
-   Comprueba en varios puntos de la pista, no solo en uno. Pulsa *Guardar*.
-2. **`cx_garra`** — pon un objeto justo delante de la garra y edita `cx_garra`
-   en `config.json` hasta que la línea amarilla pase por su centro. Es el valor
-   que define "centrado" para el robot.
-3. **`tabla_distancia`** — coloca el objeto a distancias medidas con regla
-   (60, 100, 150, 220, 300, 420 mm desde la garra) y anota el `ey` que muestra la
-   página. Cada par `[ey, mm]` va a la tabla.
-
-> **Lo más importante:** el `config.json` fija exposición y balance de blancos con
-> `v4l2-ctl`. Si los dejas en automático, el HSV del objeto cambia solo con moverse
-> por la pista y la calibración deja de servir. Es la causa número uno de que una
-> detección por color "funcione en casa y falle en la competencia". Calibra con la
-> iluminación de la sede el mismo día.
-
-### Antes de calibrar: comprueba la zona ciega
-
-La cámara va en lo alto del robot con una inclinación **leve** hacia abajo. Eso da
-buen alcance al frente, pero crea una **zona ciega cercana**: llega un punto en que
-el objeto está tan cerca que sale por debajo del encuadre.
-
-Mide dónde empieza esa zona: acerca un objeto poco a poco mirando `calibrar_web.py`
-y anota a qué distancia de la garra deja de verse. Ese número manda:
-
-- **si es menor de ~12 cm**, perfecto: el robot llega guiado casi hasta el agarre;
-- **si es mayor de ~20 cm**, el tramo final a ciegas es demasiado largo y el agarre
-  fallará seguido. Inclina más la cámara hacia abajo, aunque pierdas alcance —
-  para buscar objetos lejanos basta con girar el robot, pero el agarre no perdona.
-
-Ese valor va a `VIS_GRADOS_CIEGOS` en el sketch: los grados de encoder que el robot
-avanza a ciegas cuando pierde de vista el objeto por cercanía.
-
-### La misión: 4 objetos de 5 colores
-
-Salen 4 objetos de color y posición aleatorias, de entre rojo, verde, negro, azul y
-amarillo. Hay que dejarlos en la zona de descarga en ese orden fijo de izquierda a
-derecha, con el hueco del color ausente vacío.
-
-Como cada color tiene hueco fijo, **no hay que compactar nada**: basta con saber qué
-colores salieron (comando `X`) y llevar cada uno a su posición. Eso está resuelto en
-el sketch con `visionEscanearColores()`, `colorAusente()` y `depositarEnHueco()`;
-lo que falta calibrar en pista es `POS_DESCARGA_GRADOS[5]`.
-
-## 3. Probar
+Prueba del protocolo usando la cámara y un puerto serie virtual:
 
 ```bash
-python3 /home/pi/vision/vision_server.py --sin-serial --web
+python3 test_protocolo.py
 ```
 
-Imprime las tramas en pantalla y publica el vídeo con overlay en
-`http://192.168.0.174:8080`. Con la MegaPi conectada:
+## Protocolo serial v2
 
-```bash
-python3 /home/pi/vision/vision_server.py --verbose
+Pi a MegaPi, una trama por frame:
+
+```text
+T <found> <color> <ex> <ey> <area> <dist> <fps> <confianza>
 ```
 
-## 4. Autoarranque
+| Campo | Significado |
+|---|---|
+| `found` | `1` si hay objetivo válido |
+| `color` | Color reconocido o `NINGUNO` |
+| `ex` | Error horizontal; negativo izquierda, positivo derecha |
+| `ey` | Fila inferior del contorno; aumenta al acercarse |
+| `area` | Área del contorno en píxeles |
+| `dist` | Distancia estimada por la tabla, en mm |
+| `fps` | Frecuencia de procesamiento |
+| `confianza` | Calidad geométrica de 0 a 100 |
+
+MegaPi a Pi:
+
+| Comando | Efecto |
+|---|---|
+| `C AUTO` | Reconoce el artefacto más alineado |
+| `C ROJO`, etc. | Sigue exclusivamente ese color |
+| `X` | Diagnóstico de los cinco colores en el frame actual |
+| `S 0` / `S 1` | Detiene o activa el stream serial |
+| `P` | Responde versión y modos disponibles |
+| `# texto` | Log de MegaPi que la Pi imprime sin interpretarlo |
+
+## Calibración obligatoria en pista
+
+No se debe probar directamente con cuatro objetos. En el sketch, cambia
+temporalmente `NUM_ARTEFACTOS_OBJETIVO` de `4` a `1` y calibra en este orden.
+
+### 1. Cámara, imagen y color
+
+Primero fija la respuesta de la cámara con la iluminación real del recinto:
 
 ```bash
-sudo cp /home/pi/vision/wro-vision.service /etc/systemd/system/
+python3 calibrar_camara.py
+```
+
+Abre `http://192.168.0.166:8082`. Puedes ajustar exposición, ganancia,
+balance de blancos, brillo, contraste, saturación, gamma y nitidez en tiempo
+real. La opción **Auto-Medir y Fijar** mide la escena y deja exposición y
+balance en manual para que el HSV no cambie mientras el robot se mueve. Guarda
+el resultado en `config.json` antes de calibrar los colores.
+
+Después ejecuta el calibrador HSV y de geometría:
+
+Ejecuta:
+
+```bash
+python3 calibrar_web.py
+```
+
+Abre `http://192.168.0.166:8081`. Ajusta HSV con cada artefacto en los cuatro
+slots y con la iluminación real. Exposición y balance de blancos deben quedar
+manuales. Verifica especialmente:
+
+- azul: los dedos de la garra no deben producir contorno;
+- verde: la franja verde inferior de la pista no debe ser el objetivo;
+- negro: las líneas negras laterales no deben ganar al objeto centrado.
+
+Si cambia la cámara o el soporte, corrige `zonas_ignoradas` en `config.json`.
+Sus coordenadas son fracciones `[x0, y0, x1, y1]` de la imagen.
+
+### 2. Centro y distancia
+
+- Ajusta `geometria.cx_garra` hasta que la línea amarilla pase por el centro
+  físico entre los dedos.
+- Coloca un artefacto a 60, 100, 150, 220, 300 y 420 mm; anota `ey` y reemplaza
+  `tabla_distancia`.
+- Ajusta `VIS_Y_PRECAPTURA` y `VIS_GRADOS_CIEGOS` solo después. La cámara debe
+  perder el objeto cuando ya está centrado entre las guías, no antes.
+
+### 3. L de los slots
+
+Con la garra levantada y sin recoger, mide primero la separación entre centros
+de dos cuadros negros. Convierte esa distancia a encoder y actualiza
+`PASO_SLOT_GRADOS` (valor inicial `220`). Confirma los cuatro offsets:
+
+```text
+slot 0 = -1.5 pasos
+slot 1 = -0.5 pasos
+slot 2 = +0.5 pasos
+slot 3 = +1.5 pasos
+```
+
+Si izquierda y derecha quedaron invertidas, invierte los signos del arreglo
+`OFFSET_SLOT_GRADOS`; no intercambies nombres de motores.
+
+### 4. Museo
+
+La ruta verde probada se dividió en `500 + 180 = 680` grados:
+
+- `RUTA_CRUCE_GRADOS = 128`
+- `RUTA_HASTA_STAGING_GRADOS = 500`
+- `APROX_MUSEO_GRADOS = 180`
+- `PASO_MUSEO_GRADOS = 205` (medir)
+
+La referencia es el exhibidor verde. Prueba primero verde; luego rojo; luego
+negro, azul y amarillo. El lateral se ejecuta 180 grados de encoder antes de la
+fila, por lo que ninguna rueda o garra debería tocar un objeto ya puntuado.
+
+### 5. Ciclo y tiempo
+
+Sube `NUM_ARTEFACTOS_OBJETIVO` a `2`, comprueba el regreso inverso y solo
+después usa `4`. Mide el tiempo total. Si no caben cuatro ciclos de forma
+repetible, es preferible completar tres artefactos dentro de 120 s antes que
+iniciar un cuarto y alterar los ya puntuados.
+
+## Instalación y autoarranque
+
+En otra tarjeta:
+
+```bash
+bash install.sh
+```
+
+Para instalar el servicio:
+
+```bash
+sudo cp wro-vision.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now wro-vision
 journalctl -u wro-vision -f
 ```
 
----
+## Cumplimiento durante competencia
 
-## Protocolo serial
-
-**Pi → MegaPi**, una línea por frame a 20 Hz:
-
-```
-T <found> <color> <ex> <ey> <area> <dist> <fps>
-T 1 ROJO -34 187 950 145 24
-T 0 ROJO 0 0 0 -1 24
-```
-
-| campo   | significado |
-|---------|-------------|
-| `found` | 1 si ve el objeto |
-| `ex`    | error horizontal en px. **Negativo = objeto a la izquierda** |
-| `ey`    | fila del borde inferior del objeto (mayor = más cerca) |
-| `area`  | área del contorno en px |
-| `dist`  | mm estimados por la tabla de calibración (−1 si no hay dato) |
-
-**MegaPi → Pi:**
-
-| comando | efecto |
-|---------|--------|
-| `C ROJO` | cambia el color buscado |
-| `X` | escanea los 5 colores en el frame actual y responde `X ROJO 1 -35 278 VERDE 0 0 -1 ...` |
-| `S 0` / `S 1` | apaga/enciende el envío continuo |
-| `P` | ping → la Pi responde `K <version> <colores>` |
-| `# texto` | log de la MegaPi; la Pi lo imprime y no lo interpreta |
-
-`X` es el que resuelve tu regla de juego: salen 4 de los 5 colores y hay que saber
-cuál falta para dejar su hueco vacío. Cuesta ~25 ms (5 máscaras), así que se usa
-una vez al principio de la ronda, no en el lazo de control.
-
-El prefijo `#` permite depurar el Arduino por el mismo cable sin romper el
-protocolo. En el sketch usa `logPi("mensaje")` en vez de `Serial.println()`.
-
-## Probar el protocolo sin la MegaPi
+Las reglas generales 2026 permiten varios microcontroladores, pero prohíben la
+comunicación inalámbrica entre componentes durante la ronda. El enlace interno
+Raspberry-MegaPi debe ser USB/serial. SSH y la página web son solo para práctica.
+Antes de inspección/ronda, apaga Wi-Fi y Bluetooth y verifica que el servidor
+funcione sin red:
 
 ```bash
-python3 /home/pi/vision/test_protocolo.py
+sudo rfkill block wifi
+sudo rfkill block bluetooth
 ```
 
-Crea un puerto serie virtual, hace de MegaPi y comprueba las tramas y los cinco
-comandos. Útil antes de tocar el robot y después de cambiar la configuración.
+Para volver al modo de desarrollo:
 
-## Rendimiento medido en esta Pi 3B
+```bash
+sudo rfkill unblock wifi
+sudo rfkill unblock bluetooth
+```
 
-Con el CPU throttled a 600 MHz por el problema de alimentación:
-
-| | |
-|---|---|
-| Bucle completo (captura + detección + envío) | **20 fps** |
-| Detección de un color | 4 ms |
-| Escaneo de los 5 colores (comando `X`) | 25 ms |
-| Tramas al Arduino | 20/s |
-
-La cámara entrega 20 fps reales; el procesamiento no es el cuello de botella ni de
-lejos. Dos cosas medidas que conviene no deshacer:
-
-- **`CAP_PROP_BUFFERSIZE = 1` parte el framerate a la mitad** (20 → 10 fps). Con un
-  solo buffer encolado, el driver descarta el frame N+1 mientras se procesa el N.
-  Se dejan 3 buffers y la latencia se controla con el hilo lector de `Camara`, que
-  siempre entrega el frame más reciente.
-- **`hz_envio` demasiado cerca del framerate hace aliasing**: con la cámara a 20.8 fps
-  (48 ms) y un periodo de envío de 50 ms exactos, un frame de cada dos llegaba
-  "demasiado pronto" y se perdía, quedando en 10 tramas/s. Por eso el periodo lleva
-  un margen del 10 %.
-
-Lo que lo hace barato: sólo se genera la máscara del color activo (no de los cinco),
-la conversión BGR→HSV se hace únicamente sobre la ROI inferior, y
-`cv2.setNumThreads(2)` porque más hilos no ayudan en operaciones tan pequeñas y
-compiten con la captura.
-
-## El color negro es el caso difícil
-
-El negro comparte HSV con las sombras y con las líneas negras de la pista. Por eso
-`config.json` tiene una sección `reglas_color` que le exige más área, más altura de
-caja y una relación de aspecto más cuadrada que a los demás. Aun así:
-
-- calíbralo **el último**, y verifícalo con el robot mirando a una línea negra del
-  suelo para confirmar que no la confunde con un objeto;
-- si sigue dando falsos positivos, sube `alto_min_px` — un objeto tiene altura en la
-  imagen, una línea en el suelo no.
+La Raspberry requiere fuente independiente de 5 V / 2.5 A. No debe alimentarse
+desde la MegaPi; ambas solo comparten el enlace USB o la masa si se usa UART.
 
 ## Archivos
 
-| archivo | qué hace |
-|---------|----------|
-| `vision_core.py` | cámara (hilo lector), detección HSV, distancia, overlay |
-| `vision_server.py` | bucle principal + enlace serial con la MegaPi |
-| `calibrar_web.py` | calibrador HSV por navegador |
-| `test_protocolo.py` | prueba del protocolo con un puerto serie virtual |
-| `config.json` | toda la configuración: cámara, colores, geometría, serial |
-| `install.sh` | instalación de dependencias |
-| `wro-vision.service` | unidad systemd para el autoarranque |
-
-El lado Arduino está en [`robot_WRO/prueba_vision/prueba_vision.ino`](../robot_WRO/prueba_vision/prueba_vision.ino).
+| Archivo | Función |
+|---|---|
+| `vision_core.py` | Cámara, máscaras, contornos, AUTO, distancia y overlay |
+| `vision_server.py` | Bucle principal, protocolo v2, serial y MJPEG |
+| `config.json` | Cámara, HSV, zonas ignoradas, geometría y serial |
+| `calibrar_camara.py` | Exposición, balance de blancos y controles UVC desde navegador |
+| `calibrar_web.py` | Calibración HSV y geometría desde navegador |
+| `test_detector.py` | Pruebas sintéticas del selector y las máscaras |
+| `test_protocolo.py` | Prueba integral con puerto serie virtual |
+| `wro-vision.service` | Unidad systemd opcional |
