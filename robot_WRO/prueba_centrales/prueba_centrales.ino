@@ -558,9 +558,10 @@ void barrer() {
 void recolectar(int modo) {
   if (modo == 1) {
     miServo.write(63);
-    
   } else if (modo == 2) {
     miServo.write(120);
+  } else if (modo == 3) {
+    miServo.write(111);
   }
   _delay(1.0);
 }
@@ -630,7 +631,7 @@ void setup() {
 
 void loop() {
   Serial.println("Up");
-
+  
   // 1. ESPERAR A QUE SE PRESIONE EL BOTÓN PARA INICIAR
   while (digitalRead(BOTON_PIN) == HIGH) {
     _loop(); 
@@ -644,11 +645,46 @@ void loop() {
   // 4. ¡ACTIVAR EL MODO COMPETENCIA!
   // A partir de esta línea, si presionas el botón, el robot se detendrá por completo
   rutinaIniciada = true;
-
+  
   // ==========================================
   // TU RUTINA DE MOVIMIENTO
   // ==========================================
   
+  bajar_pala();
+  cerrarGarra();
+  retroceder(120, 25, 1.8);
+  _delay(0.5);
+
+  abrirGarra();
+  recolectar(3);
+  avanzar(90, 55, 1.0);
+  cerrarGarra();
+  bajar_pala();
+  retroceder(360, 35, 3.5);
+  detener(1.0);
+
+  _delay(2.0);
+  girarIzquierdaGyro(88, 16.0);
+  _delay(0.25);
+  avanzar(128, 45, 1.5);
+
+  _delay(2.0);
+  girarIzquierdaGyro(89, 19.5);
+  _delay(0.50);
+  avanzar(680, 65, 3.5);
+
+  recolectar(2);
+  retroceder(23, 26, 1.0);
+  recolectar(3);
+  abrirGarra();
+
+  barrer();
+  avanzar(68, 36, 0.75);
+
+  retroceder(90, 28, 1.0);
+  recolectar(3);
+  retroceder(1200, 255, 1.5);
+  /*
   avanzar(360, 80, 2.5);
   recolectar(2);
     retroceder(600, 25, 4.5);
@@ -660,26 +696,28 @@ void loop() {
      subir_pala();
      retroceder(600, 25, 4.5);
   /*
+
   girarDerechaGyro(85.0, 50.0);
   avanzar(200, 80, 2.5);
   girarIzquierdaGyro(84.0, 50.0);
  
-  
-  recolectar(2);
   retroceder(600, 25, 4.5);
 
    
- _delay(1.0);
+  _delay(1.0);
 
- subir_pala();
+  subir_pala();
+  depositar();
+  posicionar();
+  recolectar(1);
+  recolectar(2);
+  barrer();
 
-
-
- recolectar(1);
- */
+  */
   detener(1.0);
   // Bucle infinito para que no repita la rutina en la competencia
   while(1) {
     _loop();
   }
+  
 }
