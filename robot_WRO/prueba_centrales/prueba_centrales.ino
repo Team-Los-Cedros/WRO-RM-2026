@@ -684,36 +684,6 @@ void loop() {
   retroceder(90, 28, 1.0);
   recolectar(3);
   retroceder(1200, 255, 1.5);
-  /*
-  avanzar(360, 80, 2.5);
-  recolectar(2);
-    retroceder(600, 25, 4.5);
-    girarDerechaGyro(90.0, 50.0);
-    avanzar(400, 80, 2.5);
-    _delay(1.0);
-    girarDerechaGyro(85.0, 50.0);
-    avanzar(920, 90, 5.5);
-     subir_pala();
-     retroceder(600, 25, 4.5);
-  /*
-
-  girarDerechaGyro(85.0, 50.0);
-  avanzar(200, 80, 2.5);
-  girarIzquierdaGyro(84.0, 50.0);
- 
-  retroceder(600, 25, 4.5);
-
-   
-  _delay(1.0);
-
-  subir_pala();
-  depositar();
-  posicionar();
-  recolectar(1);
-  recolectar(2);
-  barrer();
-
-  */
   detener(1.0);
   // Bucle infinito para que no repita la rutina en la competencia
   while(1) {
