@@ -26,7 +26,7 @@ from urllib.parse import parse_qs, urlparse
 
 import cv2
 
-from vision_core import (Camara, Detector, cargar_config, colores_disponibles,
+from vision_core import (Camara, Detector, GestorExclusividadCamara, cargar_config, colores_disponibles,
                          dibujar_overlay, guardar_config)
 
 estado = {
@@ -37,6 +37,8 @@ estado = {
     "frame": None,
     "det": None,
     "roi_y0": 0,
+    "fps": 0,
+    "mask": None
 }
 
 PAGINA = """<html><head><meta charset="utf-8"><title>Calibrar WRO</title>
@@ -179,7 +181,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _stream(self, hacer_imagen):
         self.send_response(200)
-        self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=f")
+        self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
         self.end_headers()
         try:
             while True:
@@ -188,10 +190,13 @@ class Handler(BaseHTTPRequestHandler):
                     time.sleep(0.05)
                     continue
                 j = _jpeg(img)
-                self.wfile.write(b"--f\r\nContent-Type: image/jpeg\r\nContent-Length: %d\r\n\r\n" % len(j))
+                if j is None:
+                    time.sleep(0.05)
+                    continue
+                self.wfile.write(b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: %d\r\n\r\n" % len(j))
                 self.wfile.write(j)
                 self.wfile.write(b"\r\n")
-                time.sleep(0.1)
+                time.sleep(0.05)
         except (BrokenPipeError, ConnectionResetError):
             pass
 
@@ -208,11 +213,15 @@ class Handler(BaseHTTPRequestHandler):
                     f = estado.get("frame")
                     d = estado.get("det")
                     y0 = estado.get("roi_y0", 0)
-                    cxg = estado["detector"].cx_garra
-                if f is None or d is None:
+                    cxg = estado["detector"].cx_garra if estado.get("detector") else 0
+                    color = estado.get("color", "NINGUNO")
+                    fps = estado.get("fps", 0)
+                if f is None:
                     return None
-                return dibujar_overlay(f.copy(), d, estado["color"],
-                                       estado.get("fps", 0), y0, cxg)
+                from vision_core import Deteccion
+                if d is None:
+                    d = Deteccion()
+                return dibujar_overlay(f.copy(), d, color, fps, y0, cxg)
             return self._stream(img)
 
         if u.path == "/mask":
@@ -279,6 +288,9 @@ def main():
     estado["color"] = color_ini if color_ini in colores else colores[0]
     estado["detector"] = Detector(cfg)
 
+    gestor = GestorExclusividadCamara(nombre_script="calibrar_web.py", gestionar_servicio=True)
+    gestor.adquirir()
+
     threading.Thread(target=bucle_captura, args=(cfg, args), daemon=True).start()
     srv = ThreadingHTTPServer(("0.0.0.0", args.puerto), Handler)
 
@@ -288,6 +300,7 @@ def main():
             srv.server_close()
         except Exception:
             pass
+        gestor.liberar()
         os._exit(0)
 
     signal.signal(signal.SIGINT, signal_handler)
@@ -299,6 +312,7 @@ def main():
     except Exception:
         pass
     finally:
+        gestor.liberar()
         os._exit(0)
 
 

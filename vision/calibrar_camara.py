@@ -23,7 +23,7 @@ from urllib.parse import parse_qs, urlparse
 import cv2
 import numpy as np
 
-from vision_core import Camara, cargar_config, guardar_config
+from vision_core import Camara, GestorExclusividadCamara, cargar_config, guardar_config
 
 PAGINA_HTML = r"""<!DOCTYPE html>
 <html lang="es">
@@ -97,15 +97,14 @@ h2 { font-size: 1.25rem; font-weight: 600; }
   border-radius: 6px;
   overflow: hidden;
   border: 1px solid var(--border);
-  aspect-ratio: 4 / 3;
   display: flex;
   align-items: center;
   justify-content: center;
 }
 .video-wrap img {
   width: 100%;
-  height: 100%;
-  object-fit: contain;
+  height: auto;
+  display: block;
   image-rendering: pixelated;
 }
 .telemetria {
@@ -933,6 +932,9 @@ def main():
     cfg = cargar_config(args.config)
     estado = EstadoServidor(cfg)
 
+    gestor = GestorExclusividadCamara(nombre_script="calibrar_camara.py", gestionar_servicio=True)
+    gestor.adquirir()
+
     hilo_captura = threading.Thread(target=bucle_captura, args=(estado,), daemon=True)
     hilo_captura.start()
 
@@ -946,6 +948,7 @@ def main():
             servidor.server_close()
         except Exception:
             pass
+        gestor.liberar()
         os._exit(0)
 
     signal.signal(signal.SIGINT, signal_handler)
@@ -962,6 +965,7 @@ def main():
         pass
     finally:
         estado.corriendo = False
+        gestor.liberar()
         os._exit(0)
 
 

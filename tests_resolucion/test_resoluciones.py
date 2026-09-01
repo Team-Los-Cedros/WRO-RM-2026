@@ -133,6 +133,19 @@ def probar_resolucion(w, h, dev_idx=0, num_frames=60):
 
 
 def main():
+    import sys
+    # Add vision folder to path to import vision_core
+    vision_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "vision")
+    if vision_dir not in sys.path:
+        sys.path.append(vision_dir)
+        
+    try:
+        from vision_core import GestorExclusividadCamara
+        gestor = GestorExclusividadCamara(nombre_script="test_resoluciones.py", gestionar_servicio=True)
+        gestor.adquirir()
+    except ImportError:
+        pass
+        
     os.makedirs(CARPETA_SALIDA, exist_ok=True)
     print("=" * 75)
     print(" BENCHMARK DE RESOLUCIONES & FOV PARA RASPBERRY PI 3B (WRO 2026)")
@@ -174,6 +187,11 @@ def main():
     print("-" * 75)
     print(f"\n[OK] Fotos guardadas en: {CARPETA_SALIDA}")
     print("Descarga las fotos para comparar visualmente cual te da mayor angulo de vision horizontal.")
+
+    try:
+        gestor.liberar()
+    except NameError:
+        pass
 
 
 if __name__ == "__main__":

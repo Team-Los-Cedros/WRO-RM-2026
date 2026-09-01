@@ -43,7 +43,7 @@ import time
 
 import cv2
 
-from vision_core import (Camara, ContadorFPS, Detector, cargar_config,
+from vision_core import (Camara, ContadorFPS, Detector, GestorExclusividadCamara, cargar_config,
                          colores_disponibles, dibujar_overlay)
 
 VERSION = "2.0"
@@ -209,6 +209,10 @@ def main():
         color = disponibles[0]
 
     detector = Detector(cfg)
+    
+    gestor = GestorExclusividadCamara(nombre_script="vision_server.py", gestionar_servicio=False)
+    gestor.adquirir()
+    
     cam = Camara(cfg["camara"]).abrir()
     log("camara %dx%d abierta, buscando %s" % (cam.ancho, cam.alto, color))
 
@@ -307,6 +311,7 @@ def main():
         log("detenido por el usuario")
     finally:
         cam.cerrar()
+        gestor.liberar()
         if enlace:
             enlace.cerrar()
 
