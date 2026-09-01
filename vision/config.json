@@ -33,6 +33,17 @@
     "hz_envio": 20
   },
 
+  "web": {
+    "habilitado": true,
+    "puerto": 8080
+  },
+
+  "telemetria": {
+    "habilitado": true,
+    "guardar_archivo": true,
+    "directorio_logs": "logs"
+  },
+
   "geometria": {
     "_comentario": "cx_garra: columna en pixeles (0..ancho-1) donde queda el centro de la garra. tabla_distancia: pares [y_base_px, distancia_mm] medidos con el objeto a distancias conocidas. AMBOS HAY QUE CALIBRARLOS con calibrar_web.py; los valores de aqui son solo un punto de partida.",
     "cx_garra": 320,
