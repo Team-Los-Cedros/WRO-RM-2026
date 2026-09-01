@@ -19,6 +19,7 @@ Tambien sirve para calibrar la geometria:
 
 import argparse
 import json
+import os
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -29,6 +30,23 @@ import cv2
 from vision_core import (Camara, Detector, GestorExclusividadCamara, cargar_config, colores_disponibles,
                          dibujar_overlay, guardar_config)
 
+
+def _suprimir_warnings_libjpeg():
+    """Silencia los 'Corrupt JPEG data: premature end of data segment' de libjpeg.
+
+    Son warnings informativos del decodificador UVC/MJPG cuando el bus USB 2.0
+    de la Pi 3B (compartido con Ethernet) entrega un frame MJPG truncado.
+    OpenCV rellena los datos faltantes y el frame decodificado sale usable;
+    el warning solo ensucia stderr sin aportar nada accionable.
+    """
+    try:
+        devnull_fd = os.open(os.devnull, os.O_WRONLY)
+        os.dup2(devnull_fd, 2)  # redirige stderr (fd 2) a /dev/null
+        os.close(devnull_fd)
+    except OSError:
+        pass
+
+
 estado = {
     "cfg": None,
     "color": None,
@@ -38,7 +56,11 @@ estado = {
     "det": None,
     "roi_y0": 0,
     "fps": 0,
-    "mask": None
+    "mask": None,
+    # JPEGs pre-codificados por el hilo de captura para que los hilos HTTP
+    # del stream solo envien bytes, sin re-codificar cada frame por separado.
+    "jpeg_video": None,
+    "jpeg_mask": None,
 }
 
 PAGINA = """<html><head><meta charset="utf-8"><title>Calibrar WRO</title>
@@ -135,6 +157,8 @@ cargar(); setInterval(tick, 300);
 
 
 def bucle_captura(cfg, args):
+    from vision_core import Deteccion
+
     cam = Camara(cfg["camara"]).abrir()
     t_ant = time.time()
     fps = 0.0
@@ -152,12 +176,22 @@ def bucle_captura(cfg, args):
                 color = estado["color"]
             d, mask, roi_y0 = det_obj.detectar(frame, color)
 
+            # Pre-codificar los JPEGs aqui (un solo hilo) en vez de
+            # repetir imencode en cada hilo HTTP del stream.
+            vis = dibujar_overlay(frame.copy(), d if d else Deteccion(),
+                                 color, fps, roi_y0,
+                                 det_obj.cx_garra)
+            j_video = _jpeg(vis)
+            j_mask = _jpeg(cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR))
+
             with estado["lock"]:
                 estado["frame"] = frame
                 estado["mask"] = mask
                 estado["det"] = d
                 estado["roi_y0"] = roi_y0
                 estado["fps"] = fps
+                estado["jpeg_video"] = j_video
+                estado["jpeg_mask"] = j_mask
     finally:
         cam.cerrar()
 
@@ -179,17 +213,15 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(b)
 
-    def _stream(self, hacer_imagen):
+    def _stream_jpeg(self, clave_jpeg):
+        """Envia un stream MJPG usando los JPEGs ya codificados por el hilo de captura."""
         self.send_response(200)
         self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
         self.end_headers()
         try:
             while True:
-                img = hacer_imagen()
-                if img is None:
-                    time.sleep(0.05)
-                    continue
-                j = _jpeg(img)
+                with estado["lock"]:
+                    j = estado.get(clave_jpeg)
                 if j is None:
                     time.sleep(0.05)
                     continue
@@ -197,7 +229,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.wfile.write(j)
                 self.wfile.write(b"\r\n")
                 time.sleep(0.05)
-        except (BrokenPipeError, ConnectionResetError):
+        except (BrokenPipeError, ConnectionResetError, OSError):
             pass
 
     def do_GET(self):
@@ -208,28 +240,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._txt(PAGINA, "text/html")
 
         if u.path == "/video":
-            def img():
-                with estado["lock"]:
-                    f = estado.get("frame")
-                    d = estado.get("det")
-                    y0 = estado.get("roi_y0", 0)
-                    cxg = estado["detector"].cx_garra if estado.get("detector") else 0
-                    color = estado.get("color", "NINGUNO")
-                    fps = estado.get("fps", 0)
-                if f is None:
-                    return None
-                from vision_core import Deteccion
-                if d is None:
-                    d = Deteccion()
-                return dibujar_overlay(f.copy(), d, color, fps, y0, cxg)
-            return self._stream(img)
+            return self._stream_jpeg("jpeg_video")
 
         if u.path == "/mask":
-            def img():
-                with estado["lock"]:
-                    m = estado.get("mask")
-                return None if m is None else cv2.cvtColor(m, cv2.COLOR_GRAY2BGR)
-            return self._stream(img)
+            return self._stream_jpeg("jpeg_mask")
 
         if u.path == "/estado":
             with estado["lock"]:
@@ -275,7 +289,6 @@ class Handler(BaseHTTPRequestHandler):
 
 def main():
     import signal
-    import os
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default=None)
     ap.add_argument("--puerto", type=int, default=8081)
@@ -290,6 +303,9 @@ def main():
 
     gestor = GestorExclusividadCamara(nombre_script="calibrar_web.py", gestionar_servicio=True)
     gestor.adquirir()
+
+    # Suprimir warnings de libjpeg ANTES de abrir la camara.
+    _suprimir_warnings_libjpeg()
 
     threading.Thread(target=bucle_captura, args=(cfg, args), daemon=True).start()
     srv = ThreadingHTTPServer(("0.0.0.0", args.puerto), Handler)
