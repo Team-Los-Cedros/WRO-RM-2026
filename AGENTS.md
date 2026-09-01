@@ -1,6 +1,6 @@
 ﻿# Reglas de Proyecto y Memoria Operativa: WRO-RM-2026
 
-Este archivo contiene las directivas permanentes para el agente de IA al interactuar con el robot y la Raspberry Pi.
+Este archivo contiene las directivas permanentes para el agente de IA al interactuar con el robot, la Raspberry Pi y las herramientas de depuración.
 
 ---
 
@@ -25,37 +25,50 @@ Este archivo contiene las directivas permanentes para el agente de IA al interac
 
 - **Cámara USB:** Enumerada en `/dev/video0` (USB Camera).
 - **Controlador MegaPi:** Conectado por USB serial en `/dev/ttyUSB0` (115200 baud).
-- **Servidor Web de Visión / Streaming:** Puerto `8080` (`http://clc-wro-rm.local:8080`).
+- **Servidor Web de Visión, Streaming y Telemetría:** Puerto `8080` (`http://clc-wro-rm.local:8080` o `http://192.168.0.166:8080`).
+  - `/stream`: Video MJPEG con overlay OpenCV.
+  - `/telemetria`: JSON con eventos cronológicos de visión y MegaPi.
+  - `/estado`: Estado del servidor y serial.
 - **Servidor Web de Calibración:** Puerto `8081` (`http://clc-wro-rm.local:8081`).
 
 ---
 
-## 4. Comandos Rápidos de Despliegue y Control
+## 4. Comandos de Sincronización y Control (Herramientas PC)
 
-El agente debe utilizar directamente estos comandos sin solicitar credenciales:
+Utilizar directamente las herramientas disponibles en `herramientas/`:
 
-### Desplegar / Sincronizar cambios:
+### Sincronizar y desplegar cambios a la Raspberry Pi:
 ```bash
-scp -r vision/* robot-pi:/home/pi/WRO-RM-2026/vision/
+python herramientas/sync_pi.py push
 ```
 
-### Control del servicio de visión:
+### Descargar configuraciones y logs de la Pi:
 ```bash
-# Reiniciar servicio
-ssh robot-pi "sudo systemctl restart wro-vision"
-
-# Ver estado
-ssh robot-pi "sudo systemctl status wro-vision --no-pager"
-
-# Ver logs en vivo / recientes
-ssh robot-pi "journalctl -u wro-vision -n 50 --no-pager"
+python herramientas/sync_pi.py pull
 ```
 
-### Diagnóstico de hardware y pruebas:
+### Grabar sesiones de prueba sincronizadas (MSI StarCam + Stream Robot + Telemetría):
 ```bash
-# Verificar dispositivos
-ssh robot-pi "v4l2-ctl --list-devices && ls -la /dev/ttyUSB*"
+# Grabar corrida de duración determinada (ej. 30s)
+python herramientas/grabar_sesion.py -d 30 -n prueba_slot1
 
-# Ejecutar pruebas unitarias de visión
-ssh robot-pi "cd /home/pi/WRO-RM-2026/vision && python3 test_detector.py"
+# Grabar corrida completa interactiva
+python herramientas/grabar_sesion.py -n corrida_completa
+```
+
+### Generar o regenerar análisis Side-by-Side de una sesión:
+```bash
+python herramientas/analizar_sesion.py --ultima
+```
+
+### Diagnóstico de hardware y pruebas manuales en la Pi:
+```bash
+# Estado del servicio y dispositivos
+python herramientas/sync_pi.py status
+
+# Logs en vivo
+python herramientas/sync_pi.py logs -n 50
+
+# Pruebas unitarias de detección
+python herramientas/sync_pi.py test
 ```
