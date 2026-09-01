@@ -51,7 +51,7 @@
     "kernel_morfologia": 3,
     "relacion_aspecto_max": 4.0,
     "alto_min_px": 12,
-    "y_base_max_frac": 0.86,
+    "y_base_max_frac": 0.98,
     "auto_ex_max_px": 220,
     "zonas_ignoradas": [
       [0.18, 0.70, 0.35, 1.00],
