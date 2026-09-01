@@ -81,6 +81,7 @@ void visionPedirColor(ColorObjeto color);
 ColorObjeto visionIdentificarColor(float timeoutSeg);
 bool prepararCapturaPorVision(ColorObjeto color);
 bool irSlotAMuseoYDepositar(byte slot, ColorObjeto color);
+long offsetDestino(ColorObjeto color);
 
 const char* const NOMBRES_COLOR[5] = {
   "ROJO", "VERDE", "NEGRO", "AZUL", "AMARILLO"
@@ -333,6 +334,11 @@ void motoresTanque(float velIzq, float velDer) {
 void motoresParar() {
   Encoder_1.runSpeed(0);
   Encoder_2.runSpeed(0);
+}
+
+void detener(float segundos) {
+  motoresParar();
+  _delay(segundos);
 }
 
 // Movimiento de posicion usado solo donde hay una secuencia mecanica ya
