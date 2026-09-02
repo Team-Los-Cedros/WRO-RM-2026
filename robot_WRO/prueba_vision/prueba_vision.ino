@@ -491,12 +491,20 @@ bool moverRectoGyro(long grados, float velocidad, float timeoutSeg = 8.0) {
 // sentido: +1 derecha, -1 izquierda.
 bool girarGyro(int sentido, float gradosObjetivo, float velocidadMax) {
   giroscopio.update();
-  float inicioAngulo = giroscopio.getAngleZ();
+  float anguloAnterior = giroscopio.getAngleZ();
+  float girado = 0.0;
   unsigned long inicio = millis();
 
   while (millis() - inicio < 5000) {
     _loop();
-    float girado = abs(giroscopio.getAngleZ() - inicioAngulo);
+    // Integra cambios cortos para atravesar correctamente el salto
+    // +180/-180 que entrega el giroscopio.
+    float anguloActual = giroscopio.getAngleZ();
+    float delta = anguloActual - anguloAnterior;
+    if (delta > 180.0) delta -= 360.0;
+    if (delta < -180.0) delta += 360.0;
+    girado += abs(delta);
+    anguloAnterior = anguloActual;
     float restante = gradosObjetivo - girado;
     if (restante <= 0.0) {
       motoresParar();
@@ -759,7 +767,9 @@ const float GIRO_SALIDA_2 = 89.0;
 const long RUTA_HASTA_MUSEO_GRADOS = 620;
 
 // Expositores en orden oficial: ROJO, VERDE, NEGRO, AZUL, AMARILLO
-const int DESTINO_REFERENCIA = COLOR_VERDE;
+// El eje horizontal que une el centro de los artefactos con el museo llega
+// a la casilla central de las cinco: NEGRO.
+const int DESTINO_REFERENCIA = COLOR_NEGRO;
 const long PASO_MUSEO_GRADOS = 195;  // Separacion entre casillas de museo
 
 const byte NUM_ARTEFACTOS_OBJETIVO = 4;
@@ -773,17 +783,16 @@ bool quedaTiempo(unsigned long reservaMs) {
 // Desplazamiento perpendicular en L; termina con el mismo rumbo
 bool desplazarLateral(long grados) {
   if (grados == 0) return true;
-  bool ok = true;
   if (grados < 0) {
-    ok &= girarIzquierdaGyro(89.0, 22.0);
-    ok &= moverRectoGyro(-grados, 42.0, 5.0);
-    ok &= girarDerechaGyro(89.0, 22.0);
+    if (!girarIzquierdaGyro(89.0, 22.0)) return false;
+    if (!moverRectoGyro(-grados, 42.0, 5.0)) return false;
+    if (!girarDerechaGyro(89.0, 22.0)) return false;
   } else {
-    ok &= girarDerechaGyro(89.0, 22.0);
-    ok &= moverRectoGyro(grados, 42.0, 5.0);
-    ok &= girarIzquierdaGyro(89.0, 22.0);
+    if (!girarDerechaGyro(89.0, 22.0)) return false;
+    if (!moverRectoGyro(grados, 42.0, 5.0)) return false;
+    if (!girarIzquierdaGyro(89.0, 22.0)) return false;
   }
-  return ok;
+  return true;
 }
 
 bool irCentroASlot(byte slot) {
@@ -818,24 +827,28 @@ bool irSlotAMuseoYDepositar(byte slot, ColorObjeto color) {
   if (!volverSlotACentro(slot)) return false;
 
   // 2. Dar media vuelta (180°) hacia los expositores del museo
-  bool ok = true;
-  ok &= girarIzquierdaGyro(GIRO_SALIDA_1, 20.0);
-  ok &= girarIzquierdaGyro(GIRO_SALIDA_2, 20.0);
+  if (!girarIzquierdaGyro(GIRO_SALIDA_1, 20.0)) return false;
+  if (!girarIzquierdaGyro(GIRO_SALIDA_2, 20.0)) return false;
 
   // 3. Desplazarse lateralmente al expositor correspondiente al color
   long lateral = offsetDestino(color);
-  ok &= desplazarLateral(lateral);
+  if (!desplazarLateral(lateral)) return false;
 
   // 4. Avanzar recto hacia el expositor
-  ok &= moverRectoGyro(RUTA_HASTA_MUSEO_GRADOS, 60.0, 6.0);
-  if (!ok) return false;
+  if (!moverRectoGyro(RUTA_HASTA_MUSEO_GRADOS, 60.0, 6.0)) return false;
 
   // Correccion final por un detector exclusivo de cuadros planos. Si no hay
   // una lectura estable se conserva la pose odometrica en vez de buscar a
   // ciegas entre colores de la pista.
   visionPedirDestino(color);
   _delay(0.30);
-  if (visionVeObjeto(600)) {
+  bool destinoVisible = visionVeObjeto(600);
+  if (!destinoVisible) {
+    // En modo DESTINO solo se aceptan cuadros planos con borde blanco.
+    // El barrido corto no puede seguir el artefacto que lleva la garra.
+    destinoVisible = visionBuscar(18.0, 16.0);
+  }
+  if (destinoVisible) {
     if (!visionCentrar(2.0)) logPi("destino visible pero no centro estable");
   } else {
     logPi("destino no visible; usando llegada odometrica");
@@ -849,14 +862,14 @@ bool irSlotAMuseoYDepositar(byte slot, ColorObjeto color) {
   // Retroceso corto para despejar el expositor
   retroceder(160, 45, 1.5);
   // Deshacer el desplazamiento lateral en zona despejada
-  ok &= desplazarLateral(-lateral);
+  if (!desplazarLateral(-lateral)) return false;
   // Media vuelta (180°) para volver mirando hacia los slots del centro
-  ok &= girarIzquierdaGyro(GIRO_SALIDA_1, 22.0);
-  ok &= girarIzquierdaGyro(GIRO_SALIDA_2, 22.0);
+  if (!girarIzquierdaGyro(GIRO_SALIDA_1, 22.0)) return false;
+  if (!girarIzquierdaGyro(GIRO_SALIDA_2, 22.0)) return false;
   // Retornar al centro de la pista
-  ok &= moverRectoGyro(RUTA_HASTA_MUSEO_GRADOS - 160, 62.0, 6.0);
+  if (!moverRectoGyro(RUTA_HASTA_MUSEO_GRADOS - 160, 62.0, 6.0)) return false;
 
-  return ok;
+  return true;
 }
 
 void imprimirMapaSlots() {
