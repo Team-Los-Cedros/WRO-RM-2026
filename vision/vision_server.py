@@ -39,6 +39,7 @@ Uso:
 import argparse
 from collections import deque
 import datetime
+import glob
 import json
 import os
 from pathlib import Path
@@ -48,10 +49,11 @@ import time
 
 import cv2
 
-from vision_core import (Camara, ContadorFPS, Detector, GestorExclusividadCamara, cargar_config,
+from vision_core import (Camara, ContadorFPS, Deteccion, Detector,
+                         GestorExclusividadCamara, cargar_config,
                          colores_disponibles, dibujar_overlay)
 
-VERSION = "2.0"
+VERSION = "3.0"
 
 
 # ---------------------------------------------------------------------------
@@ -64,11 +66,21 @@ class EnlaceSerial:
         self.log = log
         self.ser = None
         self._rx = ""
+        self._proximo_intento = 0.0
+        self._conectado_antes = False
+
+    def _resolver_puerto(self):
+        puerto = self.cfg.get("puerto", "/dev/ttyUSB0")
+        if os.path.exists(puerto):
+            return puerto
+        patron = self.cfg.get("patron_by_id")
+        candidatos = sorted(glob.glob(patron)) if patron else []
+        return candidatos[0] if candidatos else puerto
 
     def abrir(self):
         import serial  # pyserial
 
-        puerto = self.cfg["puerto"]
+        puerto = self._resolver_puerto()
         baud = self.cfg.get("baudios", 115200)
 
         if self.cfg.get("evitar_reset_dtr"):
@@ -91,7 +103,36 @@ class EnlaceSerial:
             self.ser.reset_input_buffer()
 
         self.log("serial abierto en %s @ %d" % (puerto, baud))
+        self._conectado_antes = True
+        self._proximo_intento = 0.0
         return self
+
+    @property
+    def conectado(self):
+        return self.ser is not None and self.ser.is_open
+
+    def _marcar_desconectado(self, error):
+        if self.ser is not None:
+            try:
+                self.ser.close()
+            except Exception:
+                pass
+        self.ser = None
+        self._rx = ""
+        self._proximo_intento = time.monotonic() + self.cfg.get("reintento_s", 1.0)
+        self.log("serial desconectado: %s" % error)
+
+    def asegurar_conectado(self):
+        if self.conectado:
+            return True
+        if time.monotonic() < self._proximo_intento:
+            return False
+        try:
+            self.abrir()
+            return True
+        except Exception as e:
+            self._proximo_intento = time.monotonic() + self.cfg.get("reintento_s", 1.0)
+            return False
 
     def enviar(self, linea):
         if self.ser is None:
@@ -99,7 +140,7 @@ class EnlaceSerial:
         try:
             self.ser.write((linea + "\n").encode("ascii", "ignore"))
         except Exception as e:
-            self.log("error al escribir en serial: %s" % e)
+            self._marcar_desconectado(e)
 
     def leer_lineas(self):
         """Lectura no bloqueante; devuelve las lineas completas recibidas."""
@@ -110,7 +151,7 @@ class EnlaceSerial:
             if n:
                 self._rx += self.ser.read(n).decode("ascii", "ignore")
         except Exception as e:
-            self.log("error al leer serial: %s" % e)
+            self._marcar_desconectado(e)
             return []
 
         if "\n" not in self._rx:
@@ -308,9 +349,12 @@ def main():
     cfg = cargar_config(args.config)
     disponibles = colores_disponibles(cfg)
     color = (args.color or cfg["deteccion"].get("color_inicial", disponibles[0])).upper()
+    modo = cfg["deteccion"].get("modo_inicial", "PAUSA").upper()
     if color not in disponibles and color != "AUTO":
         log("color '%s' no definido; usando %s" % (color, disponibles[0]))
         color = disponibles[0]
+    if modo not in ("PAUSA", "ARTEFACTO", "DESTINO", "FILA"):
+        modo = "PAUSA"
 
     detector = Detector(cfg)
     telemetria = RegistroTelemetria(cfg.get("telemetria", {}))
@@ -323,10 +367,9 @@ def main():
 
     enlace = None
     if cfg["serial"].get("habilitado", True) and not args.sin_serial:
-        try:
-            enlace = EnlaceSerial(cfg["serial"], log).abrir()
-        except Exception as e:
-            log("AVISO: no se pudo abrir el serial (%s). Sigo sin la MegaPi." % e)
+        enlace = EnlaceSerial(cfg["serial"], log)
+        if not enlace.asegurar_conectado():
+            log("AVISO: MegaPi ausente; se reconectara automaticamente")
 
     cfg_web = cfg.get("web", {})
     habilitar_web = args.web or cfg_web.get("habilitado", True)
@@ -334,9 +377,10 @@ def main():
 
     estado_global = {
         "version": VERSION,
+        "modo": modo,
         "color_actual": color,
         "fps": 0,
-        "serial_conectado": enlace is not None,
+        "serial_conectado": enlace is not None and enlace.conectado,
         "enviando": True
     }
 
@@ -354,20 +398,34 @@ def main():
 
     try:
         while True:
-            frame = cam.leer(solo_nuevos=True, timeout=0.5)
-            if frame is None:
-                log("sin frames nuevos de la camara")
-                continue
+            if enlace:
+                enlace.asegurar_conectado()
+                estado_global["serial_conectado"] = enlace.conectado
 
-            if color == "AUTO":
+            frame = cam.leer(solo_nuevos=True, timeout=0.5)
+            det = Deteccion()
+            color_detectado = "NINGUNO"
+            roi_y0 = 0
+            if frame is None:
+                f = fps.fps
+            elif modo == "ARTEFACTO" and color == "AUTO":
                 det, color_detectado, _mask, roi_y0 = detector.detectar_auto(frame)
-            else:
+                f = fps.tick()
+            elif modo == "ARTEFACTO":
                 det, _mask, roi_y0 = detector.detectar(frame, color)
                 color_detectado = color
+                f = fps.tick()
+            elif modo == "DESTINO" and color in disponibles:
+                det, _mask, roi_y0 = detector.detectar_destino(frame, color)
+                color_detectado = color
+                f = fps.tick()
+            else:
+                f = fps.tick()
 
-            f = fps.tick()
             estado_global["fps"] = int(f)
+            estado_global["modo"] = modo
             estado_global["color_actual"] = color
+            estado_global["camara"] = cam.estado()
 
             ahora = time.time()
             if enviando and (ahora - ultimo_envio) >= periodo_envio:
@@ -384,6 +442,7 @@ def main():
                 # Registrar telemetria de vision
                 telemetria.registrar("vision", {
                     "found": 1 if det.encontrado else 0,
+                    "modo": modo,
                     "color": color_detectado,
                     "ex": det.ex,
                     "ey": det.ey,
@@ -410,10 +469,29 @@ def main():
                         nuevo = partes[1].upper()
                         if nuevo in disponibles or nuevo == "AUTO":
                             color = nuevo
-                            log("color -> %s" % color)
+                            modo = "ARTEFACTO"
+                            log("modo -> ARTEFACTO %s" % color)
                             enlace.enviar("K COLOR %s" % color)
                         else:
                             enlace.enviar("E COLOR")
+                    elif cmd == "M" and len(partes) >= 2:
+                        nuevo_modo = partes[1].upper()
+                        nuevo_color = partes[2].upper() if len(partes) >= 3 else color
+                        valido = nuevo_modo in ("PAUSA", "FILA") or (
+                            nuevo_modo in ("ARTEFACTO", "DESTINO") and
+                            nuevo_color in disponibles + (["AUTO"] if nuevo_modo == "ARTEFACTO" else []))
+                        if valido:
+                            modo = nuevo_modo
+                            color = nuevo_color
+                            log("modo -> %s %s" % (modo, color))
+                            enlace.enviar("K MODO %s %s" % (modo, color))
+                        else:
+                            enlace.enviar("E MODO")
+                    elif cmd == "F":
+                        fila = detector.detectar_fila_artefactos(frame) if frame is not None else []
+                        enlace.enviar("F %d%s" % (
+                            len(fila), "" if not fila else " " +
+                            " ".join(d.color for d in fila)))
                     elif cmd == "X":
                         partes_resp = []
                         for c in disponibles:
@@ -426,11 +504,12 @@ def main():
                         estado_global["enviando"] = enviando
                         enlace.enviar("K STREAM %d" % (1 if enviando else 0))
                     elif cmd == "P":
-                        enlace.enviar("K %s AUTO,%s" % (VERSION, ",".join(disponibles)))
+                        enlace.enviar("K %s MODOS=PAUSA,ARTEFACTO,FILA,DESTINO COLORES=AUTO,%s" %
+                                      (VERSION, ",".join(disponibles)))
 
-            if buffer_frame is not None:
-                color_overlay = color_detectado if color == "AUTO" else color
-                buffer_frame.set(dibujar_overlay(frame.copy(), det, color_overlay, f,
+            if buffer_frame is not None and frame is not None:
+                etiqueta = "%s/%s" % (modo, color_detectado if color == "AUTO" else color)
+                buffer_frame.set(dibujar_overlay(frame.copy(), det, etiqueta, f,
                                                  roi_y0, detector.cx_garra))
 
     except KeyboardInterrupt:

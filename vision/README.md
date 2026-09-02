@@ -103,7 +103,7 @@ Prueba del protocolo usando la cámara y un puerto serie virtual:
 python3 test_protocolo.py
 ```
 
-## Protocolo serial v2
+## Protocolo serial v3
 
 Pi a MegaPi, una trama por frame:
 
@@ -127,6 +127,11 @@ MegaPi a Pi:
 | Comando | Efecto |
 |---|---|
 | `C AUTO` | Reconoce el artefacto más alineado |
+| `M PAUSA` | Desactiva toda búsqueda; conserva el latido serial |
+| `M ARTEFACTO AUTO` | Reconoce artefactos 3D en la zona de recolección |
+| `M ARTEFACTO VERDE` | Sigue únicamente el artefacto 3D indicado |
+| `M FILA` y luego `F` | Devuelve los cuatro colores ordenados de izquierda a derecha |
+| `M DESTINO VERDE` | Busca el cuadro plano por forma, marco blanco y color |
 | `C ROJO`, etc. | Sigue exclusivamente ese color |
 | `X` | Diagnóstico de los cinco colores en el frame actual |
 | `S 0` / `S 1` | Detiene o activa el stream serial |

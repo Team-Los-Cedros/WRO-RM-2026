@@ -90,6 +90,45 @@ class DetectorTest(unittest.TestCase):
         self.assertEqual(color, "AMARILLO")
         self.assertLessEqual(abs(det.ex), 4)
 
+    def test_fila_asigna_slots_de_izquierda_a_derecha(self):
+        frame = self.frame()
+        y0, y1 = 105, 190
+        cv2.rectangle(frame, (35, y0), (95, y1), (0, 0, 0), -1)
+        cv2.rectangle(frame, (185, y0), (245, y1), (0, 255, 0), -1)
+        cv2.rectangle(frame, (395, y0), (455, y1), (0, 255, 255), -1)
+        cv2.rectangle(frame, (545, y0), (605, y1), (0, 0, 255), -1)
+
+        fila = self.detector.detectar_fila_artefactos(frame)
+
+        self.assertEqual([d.color for d in fila],
+                         ["NEGRO", "VERDE", "AMARILLO", "ROJO"])
+
+    def test_destino_exige_cuadro_con_marco_blanco(self):
+        frame = np.full((self.alto, self.ancho, 3), 80, dtype=np.uint8)
+        cv2.rectangle(frame, (250, 85), (390, 195), (245, 245, 245), -1)
+        cv2.rectangle(frame, (285, 110), (355, 170), (0, 0, 220), -1)
+
+        det, _, _ = self.detector.detectar_destino(frame, "ROJO")
+
+        self.assertTrue(det.encontrado)
+        self.assertLessEqual(abs(det.ex), 2)
+
+    def test_destino_rechaza_franja_de_pista(self):
+        frame = np.full((self.alto, self.ancho, 3), 170, dtype=np.uint8)
+        cv2.rectangle(frame, (0, 150), (self.ancho - 1, 178), (0, 0, 220), -1)
+
+        det, _, _ = self.detector.detectar_destino(frame, "ROJO")
+
+        self.assertFalse(det.encontrado)
+
+    def test_azul_inferior_lateral_no_es_artefacto(self):
+        frame = self.frame()
+        cv2.rectangle(frame, (550, 260), (625, 350), (255, 0, 0), -1)
+
+        det, _, _ = self.detector.detectar(frame, "AZUL")
+
+        self.assertFalse(det.encontrado)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -10,6 +10,7 @@ Este modulo no habla serial ni HTTP; solo captura y detecta.
 """
 
 import json
+import glob
 import os
 import subprocess
 import sys
@@ -30,6 +31,27 @@ import numpy as np
 cv2.setNumThreads(2)
 
 RUTA_CONFIG_POR_DEFECTO = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
+
+
+def resolver_dispositivo_video(cfg_cam):
+    """Resuelve una camara por ruta persistente y conserva fallback legado."""
+    dispositivo = cfg_cam.get("dispositivo")
+    if dispositivo and os.path.exists(dispositivo):
+        return os.path.realpath(dispositivo)
+
+    patron = cfg_cam.get("patron_by_id")
+    if patron:
+        candidatos = sorted(glob.glob(patron))
+        if candidatos:
+            return os.path.realpath(candidatos[0])
+
+    if dispositivo:
+        return dispositivo
+
+    indice = cfg_cam.get("indice", 0)
+    if isinstance(indice, str) and indice.startswith("/dev/"):
+        return indice
+    return "/dev/video%d" % int(indice)
 
 
 # ---------------------------------------------------------------------------
@@ -180,6 +202,7 @@ class Camara:
     def __init__(self, cfg_cam):
         self.cfg = cfg_cam
         self.indice = cfg_cam.get("indice", 0)
+        self.dispositivo = resolver_dispositivo_video(cfg_cam)
         self.ancho = cfg_cam.get("ancho", 320)
         self.alto = cfg_cam.get("alto", 240)
         self.voltear = cfg_cam.get("voltear_180", False)
@@ -190,28 +213,35 @@ class Camara:
         self._frame = None
         self._seq = 0
         self._ultimo_seq_entregado = -1
+        self._estado = "CERRADA"
+        self._ultimo_error = ""
+        self._reconexiones = 0
 
-    def abrir(self):
-        self.cap = cv2.VideoCapture(self.indice, cv2.CAP_V4L2)
-        if not self.cap.isOpened():
-            raise RuntimeError(
-                "No se pudo abrir la camara /dev/video%s. "
-                "Revisa con: v4l2-ctl --list-devices" % self.indice
-            )
+    def _crear_captura(self):
+        self.dispositivo = resolver_dispositivo_video(self.cfg)
+        cap = cv2.VideoCapture(self.dispositivo, cv2.CAP_V4L2)
+        if not cap.isOpened():
+            cap.release()
+            raise RuntimeError("No se pudo abrir la camara %s" % self.dispositivo)
 
         fourcc = self.cfg.get("fourcc", "MJPG")
-        self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*fourcc))
-        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.ancho)
-        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.alto)
-        self.cap.set(cv2.CAP_PROP_FPS, self.cfg.get("fps", 30))
-        self.cap.set(cv2.CAP_PROP_BUFFERSIZE, self.cfg.get("buffers", 3))
+        cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*fourcc))
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.ancho)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.alto)
+        cap.set(cv2.CAP_PROP_FPS, self.cfg.get("fps", 30))
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, self.cfg.get("buffers", 3))
+        return cap
+
+    def abrir(self):
+        self.cap = self._crear_captura()
+        self._estado = "ABRIENDO"
 
         # Primero se estabiliza el stream. Varias camaras UVC ignoran o
         # reinician controles si se aplican antes del primer frame.
         for _ in range(3):
             self.cap.read()
 
-        self._aplicar_controles_v4l2()
+        self._aplicar_controles_v4l2(self.dispositivo)
 
         self._corriendo = True
         self._hilo = threading.Thread(target=self._bucle_captura, daemon=True)
@@ -223,6 +253,7 @@ class Camara:
             time.sleep(0.02)
         if self._frame is None:
             raise RuntimeError("La camara no entrego ningun frame en 5 s")
+        self._estado = "CONECTADA"
         return self
 
     def _bucle_captura(self):
@@ -230,16 +261,43 @@ class Camara:
         try:
             while self._corriendo:
                 if self.cap is None or not self.cap.isOpened():
-                    break
+                    self._estado = "RECONECTANDO"
+                    try:
+                        self.cap = self._crear_captura()
+                        ok = False
+                        for _ in range(3):
+                            ok, frame = self.cap.read()
+                            if ok:
+                                break
+                        if not ok:
+                            raise RuntimeError("sin frames tras reabrir")
+                        self._aplicar_controles_v4l2(self.dispositivo)
+                        self._reconexiones += 1
+                        self._ultimo_error = ""
+                        self._estado = "CONECTADA"
+                        fallos = 0
+                    except Exception as e:
+                        self._ultimo_error = str(e)
+                        if self.cap is not None:
+                            self.cap.release()
+                            self.cap = None
+                        time.sleep(self.cfg.get("reintento_s", 1.0))
+                        continue
                 ok, frame = self.cap.read()
                 if not self._corriendo:
                     break
                 if not ok:
                     fallos += 1
-                    if fallos > 100:
-                        time.sleep(0.1)
+                    if fallos >= self.cfg.get("fallos_para_reabrir", 8):
+                        self._ultimo_error = "la camara dejo de entregar frames"
+                        self._estado = "RECONECTANDO"
+                        self.cap.release()
+                        self.cap = None
+                        with self._lock:
+                            self._frame = None
                     continue
                 fallos = 0
+                self._estado = "CONECTADA"
                 if self.voltear:
                     frame = cv2.rotate(frame, cv2.ROTATE_180)
                 with self._lock:
@@ -257,9 +315,9 @@ class Camara:
                     pass
                 self.cap = None
 
-    def _aplicar_controles_v4l2(self):
+    def _aplicar_controles_v4l2(self, dev=None):
         c = self.cfg
-        dev = "/dev/video%s" % self.indice
+        dev = dev or self.dispositivo
         controles = []
 
         if c.get("auto_exposicion") is True:
@@ -321,7 +379,7 @@ class Camara:
             self.voltear = bool(valor)
             return True
 
-        dev = "/dev/video%s" % self.indice
+        dev = self.dispositivo
         if clave_cfg == "auto_exposicion":
             self._aplicar_ctrl_individual(dev, "auto_exposure=%d" % (3 if valor else 1))
             if not valor and self.cfg.get("exposicion_absoluta") is not None:
@@ -427,12 +485,22 @@ class Camara:
 
     def cerrar(self):
         self._corriendo = False
+        self._estado = "CERRANDO"
         if self._hilo is not None:
             self._hilo.join(timeout=1.0)
             self._hilo = None
         if self.cap is not None:
             self.cap.release()
             self.cap = None
+        self._estado = "CERRADA"
+
+    def estado(self):
+        return {
+            "estado": self._estado,
+            "dispositivo": self.dispositivo,
+            "reconexiones": self._reconexiones,
+            "ultimo_error": self._ultimo_error,
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -477,6 +545,8 @@ class Detector:
         self.y_base_max_frac = det.get("y_base_max_frac", 1.0)
         self.auto_ex_max_px = det.get("auto_ex_max_px", 110)
         self.zonas_ignoradas = det.get("zonas_ignoradas", [])
+        self.fila_cfg = cfg.get("fila_artefactos", {})
+        self.destino_cfg = cfg.get("destino", {})
         self.reglas = {k: v for k, v in cfg.get("reglas_color", {}).items()
                        if not k.startswith("_")}
         k = det.get("kernel_morfologia", 3)
@@ -563,6 +633,13 @@ class Detector:
             if y_base > y_base_max:
                 continue
 
+            if color == "AZUL" and r.get("rechazar_inferior_lateral", False):
+                frac_inferior = r.get("inferior_desde_frac", 0.68)
+                centro_max = r.get("centro_max_frac", 0.16) * frame.shape[1]
+                if y_base >= frame.shape[0] * frac_inferior and \
+                        abs((x + w // 2) - self.cx_garra) > centro_max:
+                    continue
+
             d = Deteccion()
             d.encontrado = True
             d.color = color
@@ -625,11 +702,133 @@ class Detector:
         vacia = np.zeros(hsv_roi.shape[:2], dtype=np.uint8)
         return Deteccion(), "NINGUNO", vacia, y0
 
+    def detectar_fila_artefactos(self, frame):
+        """Detecta la fila completa solo desde la pose central esperada."""
+        y_frac = self.fila_cfg.get("roi_y", [0.18, 0.68])
+        y_min = int(frame.shape[0] * y_frac[0])
+        y_max = int(frame.shape[0] * y_frac[1])
+        hsv_roi, y0, y1 = self._preparar_hsv(frame)
+        posibles = []
+
+        for color in colores_disponibles(self.cfg):
+            candidatos, _, _ = self.candidatos(frame, color, hsv_roi, y0, y1)
+            for d in candidatos:
+                if y_min <= d.cy <= y_max and d.y_base <= y_max:
+                    posibles.append(d)
+
+        # Un detalle amarillo dentro de un artefacto verde no es otro slot.
+        # Se agrupan centros cercanos y se conserva la silueta de mayor area.
+        posibles.sort(key=lambda d: d.area, reverse=True)
+        grupos = []
+        separacion = self.fila_cfg.get("separacion_duplicado_frac", 0.08) * frame.shape[1]
+        for d in posibles:
+            if any(abs(d.cx - g.cx) < separacion and
+                   abs(d.cy - g.cy) < separacion for g in grupos):
+                continue
+            grupos.append(d)
+
+        grupos.sort(key=lambda d: d.cx)
+        max_slots = int(self.fila_cfg.get("max_slots", 4))
+        if len(grupos) > max_slots:
+            grupos = sorted(grupos, key=lambda d: d.area, reverse=True)[:max_slots]
+            grupos.sort(key=lambda d: d.cx)
+        return grupos
+
+    def detectar_destino(self, frame, color):
+        """Detecta el cuadro plano del museo por color, forma y marco blanco."""
+        cfg = self.destino_cfg
+        alto, ancho = frame.shape[:2]
+        roi_y = cfg.get("roi_y", [0.04, 0.70])
+        y0 = max(0, int(alto * roi_y[0]))
+        y1 = min(alto, int(alto * roi_y[1]))
+        hsv = cv2.cvtColor(frame[y0:y1], cv2.COLOR_BGR2HSV)
+        rangos_cfg = self.cfg.get("colores_destino", {}).get(color)
+        rangos = _rangos_a_arrays(rangos_cfg) if rangos_cfg else self.rangos(color)
+        mask = cv2.inRange(hsv, rangos[0][0], rangos[0][1])
+        for bajo, alto_r in rangos[1:]:
+            mask |= cv2.inRange(hsv, bajo, alto_r)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, self.kernel)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, self.kernel)
+
+        area_min = cfg.get("area_min_px", 220)
+        aspecto_min = cfg.get("relacion_aspecto_min", 0.45)
+        aspecto_max = cfg.get("relacion_aspecto_max", 2.2)
+        relleno_min = cfg.get("relleno_min", 0.58)
+        blanco_min = cfg.get("marco_blanco_min", 0.12)
+        candidatos = []
+
+        contornos = cv2.findContours(mask, cv2.RETR_EXTERNAL,
+                                     cv2.CHAIN_APPROX_SIMPLE)[-2]
+        for c in contornos:
+            area = cv2.contourArea(c)
+            if area < area_min:
+                continue
+            x, y, w, h = cv2.boundingRect(c)
+            if w == 0 or h == 0:
+                continue
+            # Un contorno cortado por el borde de la ROI suele ser fondo de
+            # pista; un cuadro completo del museo no debe tocar ese borde.
+            if y <= 1 or y + h >= (y1 - y0) - 1:
+                continue
+            aspecto = w / float(h)
+            relleno = area / float(w * h)
+            if not aspecto_min <= aspecto <= aspecto_max or relleno < relleno_min:
+                continue
+
+            margen = max(6, int(max(w, h) * cfg.get("margen_marco_frac", 0.45)))
+            rx0, ry0 = max(0, x - margen), max(0, y - margen)
+            rx1, ry1 = min(ancho, x + w + margen), min(y1 - y0, y + h + margen)
+            anillo = np.ones((ry1 - ry0, rx1 - rx0), dtype=np.uint8)
+            anillo[y - ry0:y + h - ry0, x - rx0:x + w - rx0] = 0
+            hsv_anillo = hsv[ry0:ry1, rx0:rx1]
+            blanco = ((hsv_anillo[:, :, 1] <= cfg.get("blanco_s_max", 70)) &
+                      (hsv_anillo[:, :, 2] >= cfg.get("blanco_v_min", 120)) &
+                      (anillo > 0))
+            total_anillo = max(int(np.count_nonzero(anillo)), 1)
+            frac_blanco = np.count_nonzero(blanco) / float(total_anillo)
+            if frac_blanco < blanco_min:
+                continue
+
+            perimetro = cv2.arcLength(c, True)
+            vertices = len(cv2.approxPolyDP(c, 0.04 * perimetro, True))
+            q_forma = min(1.0, relleno)
+            q_marco = min(1.0, frac_blanco / max(blanco_min * 2.5, 0.01))
+            q_cuatro = 1.0 if 4 <= vertices <= 6 else 0.4
+            q_centro = max(0.0, 1.0 - abs((x + w / 2.0) - self.cx_garra) /
+                           max(ancho / 2.0, 1.0))
+
+            d = Deteccion()
+            d.encontrado = True
+            d.color = color
+            d.cx = x + w // 2
+            d.cy = y + h // 2 + y0
+            d.y_base = y + h + y0
+            d.area = int(area)
+            d.w, d.h = w, h
+            d.ex = d.cx - self.cx_garra
+            d.ey = d.y_base
+            d.dist_mm = self.distancia_destino_mm(d.y_base)
+            d.confianza = int(round(100 * (0.30 * q_forma + 0.35 * q_marco +
+                                           0.20 * q_cuatro + 0.15 * q_centro)))
+            candidatos.append(d)
+
+        candidatos.sort(key=lambda d: (d.confianza, -abs(d.ex), d.area), reverse=True)
+        return (candidatos[0] if candidatos else Deteccion()), mask, y0
+
     def distancia_mm(self, y_base):
         """Interpola la tabla de calibracion. Fuera de rango hace clamp."""
         if len(self._tab_y) < 2:
             return -1
         return int(np.interp(float(y_base), self._tab_y, self._tab_d))
+
+    def distancia_destino_mm(self, y_base):
+        tabla = self.destino_cfg.get("tabla_distancia", [])
+        if len(tabla) < 2:
+            return self.distancia_mm(y_base)
+        tabla = sorted(tabla, key=lambda p: p[0])
+        ys = np.array([p[0] for p in tabla], dtype=np.float32)
+        ds = np.array([p[1] for p in tabla], dtype=np.float32)
+        return int(np.interp(float(y_base), ys, ds))
 
 
 # ---------------------------------------------------------------------------

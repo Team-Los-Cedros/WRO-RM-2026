@@ -14,6 +14,11 @@ y para volver a comprobarlo despues de cambiar la configuracion.
 
 import json
 import os
+import unittest
+
+if os.name == "nt":
+    raise unittest.SkipTest("La prueba PTY del protocolo requiere Linux")
+
 import pty
 import subprocess
 import sys
@@ -104,6 +109,29 @@ def main():
         check(len(ks) > 0, "responde al ping con K", "respuestas: %r" % resp[-3:])
         if ks:
             print("     %s" % ks[0])
+
+        print("\n2b. Modos de vision v3")
+        os.write(maestro, b"M PAUSA\n")
+        resp = leer_lineas(maestro, 2.0, hasta="K MODO")
+        check(any(l.startswith("K MODO PAUSA") for l in resp),
+              "acepta PAUSA")
+        pausadas = [l for l in leer_lineas(maestro, 0.5) if l.startswith("T ")]
+        check(bool(pausadas) and all(l.split()[1:3] == ["0", "NINGUNO"]
+                                    for l in pausadas),
+              "PAUSA no publica falsos objetivos")
+
+        os.write(maestro, b"M FILA\n")
+        leer_lineas(maestro, 1.0, hasta="K MODO")
+        os.write(maestro, b"F\n")
+        resp = leer_lineas(maestro, 2.0, hasta="F ")
+        fs = [l for l in resp if l.startswith("F ")]
+        check(bool(fs) and 0 <= int(fs[0].split()[1]) <= 4,
+              "F responde una cantidad valida de slots")
+
+        os.write(maestro, b"M DESTINO ROJO\n")
+        resp = leer_lineas(maestro, 2.0, hasta="K MODO")
+        check(any(l.startswith("K MODO DESTINO ROJO") for l in resp),
+              "acepta el detector exclusivo de destino")
 
         print("\n3. Comando C (cambio de color)")
         os.write(maestro, b"C VERDE\n")

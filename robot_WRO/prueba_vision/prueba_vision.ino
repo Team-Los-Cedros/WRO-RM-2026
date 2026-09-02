@@ -78,6 +78,9 @@ enum ColorObjeto {
 ColorObjeto colorDesdeTexto(const char* texto);
 void logColor(const char* prefijo, ColorObjeto color);
 void visionPedirColor(ColorObjeto color);
+void visionPausar();
+void visionPedirDestino(ColorObjeto color);
+bool visionEscanearFila(float timeoutSeg);
 ColorObjeto visionIdentificarColor(float timeoutSeg);
 bool prepararCapturaPorVision(ColorObjeto color);
 bool irSlotAMuseoYDepositar(byte slot, ColorObjeto color);
@@ -111,6 +114,11 @@ ColorObjeto colorEnSlot[4] = {
   COLOR_NINGUNO, COLOR_NINGUNO, COLOR_NINGUNO, COLOR_NINGUNO
 };
 bool colorCompletado[5] = {false, false, false, false, false};
+ColorObjeto filaRecibida[4] = {
+  COLOR_NINGUNO, COLOR_NINGUNO, COLOR_NINGUNO, COLOR_NINGUNO
+};
+byte cantidadFilaRecibida = 0;
+unsigned long secuenciaFila = 0;
 
 ColorObjeto colorDesdeTexto(const char* texto) {
   if (!texto) return COLOR_NINGUNO;
@@ -136,6 +144,22 @@ void logColor(const char* prefijo, ColorObjeto color) {
 }
 
 void visionProcesarLinea(char* linea) {
+  if (linea[0] == 'F' && linea[1] == ' ') {
+    char* tok = strtok(linea + 2, " ");
+    if (!tok) return;
+    int cantidad = atoi(tok);
+    if (cantidad < 0 || cantidad > 4) return;
+    for (int i = 0; i < 4; i++) filaRecibida[i] = COLOR_NINGUNO;
+    for (int i = 0; i < cantidad; i++) {
+      tok = strtok(NULL, " ");
+      if (!tok) return;
+      filaRecibida[i] = colorDesdeTexto(tok);
+    }
+    cantidadFilaRecibida = cantidad;
+    secuenciaFila++;
+    return;
+  }
+
   if (linea[0] != 'T' || linea[1] != ' ') return;
 
   char* tok = strtok(linea + 2, " ");
@@ -191,11 +215,76 @@ bool visionVeObjeto(unsigned long msMax = 350) {
 }
 
 void visionPedirModo(const char* modo) {
-  SERIAL_VISION.print("C ");
+  SERIAL_VISION.print("M ARTEFACTO ");
   SERIAL_VISION.println(modo);
   vision.encontrado = false;
   vision.color = COLOR_NINGUNO;
   vision.tRecepcion = 0;
+}
+
+void visionPausar() {
+  SERIAL_VISION.println("M PAUSA");
+  vision.encontrado = false;
+  vision.color = COLOR_NINGUNO;
+  vision.tRecepcion = 0;
+}
+
+void visionPedirDestino(ColorObjeto color) {
+  if (color < COLOR_ROJO || color > COLOR_AMARILLO) return;
+  SERIAL_VISION.print("M DESTINO ");
+  SERIAL_VISION.println(NOMBRES_COLOR[(int)color]);
+  vision.encontrado = false;
+  vision.color = COLOR_NINGUNO;
+  vision.tRecepcion = 0;
+}
+
+bool visionEscanearFila(float timeoutSeg) {
+  ColorObjeto anterior[4] = {
+    COLOR_NINGUNO, COLOR_NINGUNO, COLOR_NINGUNO, COLOR_NINGUNO
+  };
+  int estables = 0;
+  unsigned long ultimaSecuencia = secuenciaFila;
+  unsigned long inicio = millis();
+  unsigned long timeoutMs = (unsigned long)(timeoutSeg * 1000.0);
+
+  SERIAL_VISION.println("M FILA");
+  while (millis() - inicio < timeoutMs) {
+    SERIAL_VISION.println("F");
+    unsigned long espera = millis();
+    while (secuenciaFila == ultimaSecuencia && millis() - espera < 220) {
+      _loop();
+      delay(2);
+    }
+    if (secuenciaFila == ultimaSecuencia) continue;
+    ultimaSecuencia = secuenciaFila;
+    if (cantidadFilaRecibida != 4) {
+      estables = 0;
+      continue;
+    }
+
+    bool valida = true;
+    bool iguales = true;
+    for (int i = 0; i < 4; i++) {
+      if (filaRecibida[i] < COLOR_ROJO || filaRecibida[i] > COLOR_AMARILLO) valida = false;
+      if (filaRecibida[i] != anterior[i]) iguales = false;
+      for (int j = 0; j < i; j++) {
+        if (filaRecibida[i] == filaRecibida[j]) valida = false;
+      }
+    }
+    if (!valida) {
+      estables = 0;
+      continue;
+    }
+    estables = iguales ? estables + 1 : 1;
+    for (int i = 0; i < 4; i++) anterior[i] = filaRecibida[i];
+    if (estables >= 3) {
+      for (int i = 0; i < 4; i++) colorEnSlot[i] = anterior[i];
+      visionPausar();
+      return true;
+    }
+  }
+  visionPausar();
+  return false;
 }
 
 void visionPedirColor(ColorObjeto color) {
@@ -741,8 +830,20 @@ bool irSlotAMuseoYDepositar(byte slot, ColorObjeto color) {
   ok &= moverRectoGyro(RUTA_HASTA_MUSEO_GRADOS, 60.0, 6.0);
   if (!ok) return false;
 
+  // Correccion final por un detector exclusivo de cuadros planos. Si no hay
+  // una lectura estable se conserva la pose odometrica en vez de buscar a
+  // ciegas entre colores de la pista.
+  visionPedirDestino(color);
+  _delay(0.30);
+  if (visionVeObjeto(600)) {
+    if (!visionCentrar(2.0)) logPi("destino visible pero no centro estable");
+  } else {
+    logPi("destino no visible; usando llegada odometrica");
+  }
+
   // 5. Depositar el artefacto con la rutina precisa
   depositarConRutinaProbada();
+  visionPausar();
 
   // 6. Retorno seguro:
   // Retroceso corto para despejar el expositor
@@ -778,10 +879,9 @@ bool procesarSlot(byte slot) {
     return false;
   }
 
-  ColorObjeto color = visionIdentificarColor(1.8);
-  if (color == COLOR_NINGUNO) {
-    color = visionIdentificarColor(1.5);
-  }
+  ColorObjeto color = colorEnSlot[slot];
+  if (color == COLOR_NINGUNO) color = visionIdentificarColor(1.8);
+  if (color == COLOR_NINGUNO) color = visionIdentificarColor(1.5);
 
   colorEnSlot[slot] = color;
   if (color == COLOR_NINGUNO) {
@@ -801,6 +901,7 @@ bool procesarSlot(byte slot) {
 
   // Captura en 2 pasos y retroceso a mitad de pista
   capturarConRutinaProbada();
+  visionPausar();
 
   // Viaje al museo, deposito y retorno al centro para el proximo
   if (!irSlotAMuseoYDepositar(slot, color)) {
@@ -868,6 +969,15 @@ void loop() {
   unsigned long esperaPi = millis();
   while (!visionViva(1000) && millis() - esperaPi < 2200) _loop();
   if (!visionViva(1000)) logPi("AVISO: enlace de vision no confirmado");
+
+  // La unica busqueda global se hace aqui: robot inmovil, centrado y mirando
+  // la fila original. Desde este punto cada slot se sigue por su color fijo.
+  if (visionEscanearFila(2.4)) {
+    logPi("mapa inicial de cuatro slots confirmado");
+    imprimirMapaSlots();
+  } else {
+    logPi("fila no estable; se usara AUTO solo al llegar a cada slot");
+  }
 
   for (int intento = 0; intento < NUM_ARTEFACTOS_OBJETIVO; intento++) {
     if (!quedaTiempo(RESERVA_NUEVO_CICLO_MS)) {
