@@ -69,8 +69,8 @@ mapa global porque desde el inicio la cámara solo alcanza a ver dos objetos.
 | Servicio | El archivo existe en el proyecto, pero la unidad no estaba instalada |
 | Enlace MegaPi | `/dev/ttyUSB0`; estaba desconectada durante esta verificación |
 
-La calibración vigente extraída al repositorio fija exposición `750`,
-temperatura `4500`, ganancia `25`, brillo `12`, contraste `33`, saturación `68`,
+La calibración vigente extraída al repositorio fija exposición `180`,
+temperatura `4500`, ganancia `25`, brillo `8`, contraste `33`, saturación `68`,
 gamma `100` y nitidez `2`. Esos valores se conservaron en `config.json`; son una
 base, no sustituyen la calibración con la luz del evento.
 

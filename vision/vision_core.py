@@ -12,8 +12,15 @@ Este modulo no habla serial ni HTTP; solo captura y detecta.
 import json
 import os
 import subprocess
+import sys
 import threading
 import time
+import atexit
+
+try:
+    import fcntl
+except ImportError:
+    fcntl = None
 
 import cv2
 import numpy as np
@@ -24,6 +31,103 @@ cv2.setNumThreads(2)
 
 RUTA_CONFIG_POR_DEFECTO = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
 
+
+# ---------------------------------------------------------------------------
+# Bloqueo y Exclusividad
+# ---------------------------------------------------------------------------
+
+class GestorExclusividadCamara:
+    """
+    Evita que dos scripts abran /dev/video0 a la vez y corrompan el streaming (Corrupt JPEG data).
+    Tambien puede detener 'wro-vision' (si esta corriendo) y restaurarlo al salir.
+    """
+    _instancia_activa = None
+
+    def __init__(self, nombre_script="script", gestionar_servicio=False):
+        self.nombre_script = nombre_script
+        self.gestionar_servicio = gestionar_servicio
+        self.lockfile = "/tmp/wro_camara.lock"
+        self.fd_lock = None
+        self.servicio_detenido = False
+
+    def __enter__(self):
+        self.adquirir()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.liberar()
+
+    def adquirir(self):
+        if self.gestionar_servicio and self._servicio_activo():
+            print("[GestorCamara] El servicio 'wro-vision' esta usando la camara.", flush=True)
+            print("[GestorCamara] Deteniendo temporalmente el servicio...", flush=True)
+            subprocess.run(["sudo", "systemctl", "stop", "wro-vision"], timeout=5)
+            self.servicio_detenido = True
+            time.sleep(0.3)
+
+        if fcntl:
+            self.fd_lock = os.open(self.lockfile, os.O_RDWR | os.O_CREAT, 0o666)
+            try:
+                fcntl.flock(self.fd_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                info = json.dumps({"pid": os.getpid(), "script": self.nombre_script})
+                os.ftruncate(self.fd_lock, 0)
+                os.write(self.fd_lock, info.encode("utf-8"))
+                os.fsync(self.fd_lock)
+            except (IOError, OSError):
+                # Ya esta bloqueado por otro proceso
+                try:
+                    os.lseek(self.fd_lock, 0, os.SEEK_SET)
+                    datos = os.read(self.fd_lock, 1024).decode("utf-8")
+                    info = json.loads(datos)
+                    pid = info.get("pid", "?")
+                    script = info.get("script", "desconocido")
+                except Exception:
+                    pid = "?"
+                    script = "desconocido"
+                
+                print("\n" + "="*70)
+                print(f" ERROR: La camara ya esta en uso por otro proceso (PID: {pid}, Script: {script})")
+                print(" No se permite ejecucion simultanea para evitar corromper el video.")
+                print(" Cierra primero el otro script o pestaña de calibracion.")
+                print("="*70 + "\n", flush=True)
+                sys.exit(1)
+
+        GestorExclusividadCamara._instancia_activa = self
+        atexit.register(self.liberar)
+
+    def liberar(self):
+        if self.fd_lock is not None:
+            if fcntl:
+                try:
+                    fcntl.flock(self.fd_lock, fcntl.LOCK_UN)
+                except OSError:
+                    pass
+            try:
+                os.close(self.fd_lock)
+            except OSError:
+                pass
+            self.fd_lock = None
+            try:
+                os.unlink(self.lockfile)
+            except OSError:
+                pass
+
+        if self.servicio_detenido:
+            print("[GestorCamara] Restaurando servicio 'wro-vision'...", flush=True)
+            subprocess.run(["sudo", "systemctl", "start", "wro-vision"], timeout=5)
+            self.servicio_detenido = False
+            time.sleep(0.2)
+            
+        GestorExclusividadCamara._instancia_activa = None
+
+    @staticmethod
+    def _servicio_activo():
+        try:
+            r = subprocess.run(["systemctl", "is-active", "wro-vision"],
+                               capture_output=True, text=True, timeout=2)
+            return r.stdout.strip() == "active"
+        except Exception:
+            return False
 
 # ---------------------------------------------------------------------------
 # Configuracion
@@ -171,6 +275,7 @@ class Camara:
             controles.append("white_balance_automatic=0")
             if c.get("temperatura_color") is not None:
                 controles.append("white_balance_temperature=%d" % c["temperatura_color"])
+
         for nombre_cfg, nombre_v4l2 in (("brillo", "brightness"),
                                         ("contraste", "contrast"),
                                         ("saturacion", "saturation"),

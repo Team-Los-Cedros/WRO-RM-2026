@@ -5,8 +5,8 @@ After=multi-user.target
 [Service]
 Type=simple
 User=pi
-WorkingDirectory=/home/pi/vision
-ExecStart=/usr/bin/python3 /home/pi/vision/vision_server.py
+WorkingDirectory=/home/pi/WRO-RM-2026/vision
+ExecStart=/usr/bin/python3 /home/pi/WRO-RM-2026/vision/vision_server.py
 Restart=always
 RestartSec=3
 # Si la camara o la MegaPi tardan en enumerarse tras el arranque, el Restart

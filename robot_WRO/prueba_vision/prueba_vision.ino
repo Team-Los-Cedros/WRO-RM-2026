@@ -80,8 +80,8 @@ void logColor(const char* prefijo, ColorObjeto color);
 void visionPedirColor(ColorObjeto color);
 ColorObjeto visionIdentificarColor(float timeoutSeg);
 bool prepararCapturaPorVision(ColorObjeto color);
+bool irSlotAMuseoYDepositar(byte slot, ColorObjeto color);
 long offsetDestino(ColorObjeto color);
-bool depositarColorDesdeStaging(ColorObjeto color);
 
 const char* const NOMBRES_COLOR[5] = {
   "ROJO", "VERDE", "NEGRO", "AZUL", "AMARILLO"
@@ -336,6 +336,11 @@ void motoresParar() {
   Encoder_2.runSpeed(0);
 }
 
+void detener(float segundos) {
+  motoresParar();
+  _delay(segundos);
+}
+
 // Movimiento de posicion usado solo donde hay una secuencia mecanica ya
 // probada. +/+ significa adelante para ambos lados.
 void moverRobot(long gradosIzq, long gradosDer, float velocidad, float espera) {
@@ -431,7 +436,7 @@ bool girarIzquierdaGyro(float grados, float velocidad) {
 }
 
 // =========================================================================
-// GARRA Y PALA - ANGULOS ACTUALES DE prueba_centrales.ino
+// GARRA Y PALA - ANGULOS PROBADOS
 // =========================================================================
 
 const int GARRA_ABIERTA_S1 = 0;
@@ -440,13 +445,13 @@ const int GARRA_CERRADA_S2 = 58;
 const int GARRA_ABIERTA_S2 = 180;
 
 const int PALA_INICIAL = 0;
-const int PALA_BAJAR = 105;
+const int PALA_BAJAR = 105;          // Posicion normal de vision y transporte (despega 6° del suelo)
 const int PALA_MODO_1 = 63;
-const int PALA_TRANSPORTE = 120;  // antiguo recolectar(2)
-const int PALA_RECOGER = 111;     // antiguo recolectar(3)
+const int PALA_ASENTAR = 120;        // Antiguo recolectar(2): maxima inclinacion para asentar objeto al depositar
+const int PALA_RECOGER = 111;        // Antiguo recolectar(3): ras de suelo para embocar pala bajo el objeto
 const int PALA_POSICIONAR = 50;
 const int PALA_DEPOSITAR = 40;
-const int PALA_BARRER = 117;
+const int PALA_BARRER = 117;         // Modo barrido frontal para empujar al museo
 
 void abrirGarra() {
   servoGarra1.write(GARRA_ABIERTA_S1);
@@ -465,9 +470,13 @@ void bajarPala() {
   _delay(0.75);
 }
 
+void bajar_pala() {
+  bajarPala();
+}
+
 void recolectar(int modo) {
   if (modo == 1) miServo.write(PALA_MODO_1);
-  else if (modo == 2) miServo.write(PALA_TRANSPORTE);
+  else if (modo == 2) miServo.write(PALA_ASENTAR);
   else miServo.write(PALA_RECOGER);
   _delay(0.75);
 }
@@ -484,17 +493,17 @@ void barrer() {
 }
 
 // =========================================================================
-// CENTRADO Y APROXIMACION POR VISION
+// CENTRADO Y APROXIMACION POR VISION (640x360)
 // =========================================================================
 
-const int VIS_TOLERANCIA_PX = 7;
-const float VIS_KP_GIRO = 0.50;
+const int VIS_TOLERANCIA_PX = 8;
+const float VIS_KP_GIRO = 0.45;
 const float VIS_VEL_GIRO_MIN = 18;
-const float VIS_VEL_GIRO_MAX = 48;
-const float VIS_KP_AVANCE = 0.26;
-const int VIS_DIST_PRECAPTURA_MM = 110;
-const int VIS_Y_PRECAPTURA = 188;
-const long VIS_GRADOS_CIEGOS = 45;
+const float VIS_VEL_GIRO_MAX = 45;
+const float VIS_KP_AVANCE = 0.22;
+const int VIS_DIST_PRECAPTURA_MM = 75; // Distancia donde las paletas MG-90 abrazan de punta el artefacto
+const int VIS_Y_PRECAPTURA = 338;      // En 640x360, y=338 corresponde a ~70 mm
+const long VIS_GRADOS_CIEGOS = 90;     // ~5 cm de avance si entra al punto ciego inferior
 
 float velocidadGiroVision(int ex) {
   float v = limitar(VIS_KP_GIRO * abs(ex), VIS_VEL_GIRO_MIN, VIS_VEL_GIRO_MAX);
@@ -574,6 +583,7 @@ bool visionAproximar(int distObjetivoMm, float velocidad, float timeoutSeg) {
       ultimaDist = vision.dist;
       ultimoEy = vision.ey;
 
+      // Condicion de llegada: distancia objetivo alcanzada o base del objeto en pre-captura
       if ((vision.dist > 0 && vision.dist <= distObjetivoMm) ||
           vision.ey >= VIS_Y_PRECAPTURA) {
         motoresParar();
@@ -582,22 +592,23 @@ bool visionAproximar(int distObjetivoMm, float velocidad, float timeoutSeg) {
       }
 
       float v = velocidad;
-      if (vision.dist > 0 && vision.dist < 180) {
-        v = limitar(velocidad * vision.dist / 180.0, 24.0, velocidad);
+      if (vision.dist > 0 && vision.dist < 160) {
+        v = limitar(velocidad * vision.dist / 160.0, 22.0, velocidad);
       }
       float corr = limitar(VIS_KP_AVANCE * vision.ex, -v * 0.65, v * 0.65);
       motoresTanque(v - corr, v + corr);
     } else {
-      if ((ultimaDist > 0 && ultimaDist < 165) || ultimoEy > 172) {
+      // Si el objeto entra al punto ciego inferior cerca del chasis
+      if ((ultimaDist > 0 && ultimaDist < 130) || ultimoEy > 290) {
         motoresParar();
         avanzar(VIS_GRADOS_CIEGOS, 28, 1.0);
         return true;
       }
-      if (millis() - ultimoVisto > 450) {
+      if (millis() - ultimoVisto > 500) {
         motoresParar();
         return false;
       }
-      motoresTanque(velocidad * 0.50, velocidad * 0.50);
+      motoresTanque(velocidad * 0.45, velocidad * 0.45);
     }
     delay(3);
   }
@@ -607,8 +618,8 @@ bool visionAproximar(int distObjetivoMm, float velocidad, float timeoutSeg) {
 }
 
 bool prepararCapturaPorVision(ColorObjeto color) {
-  abrirGarra();
-  recolectar(3);
+  bajarPala();   // 105°: pala en posicion normal de vision
+  abrirGarra();  // Paletas alineadas a los laterales (brazos hacia los lados)
   visionPedirColor(color);
   _delay(0.25);
 
@@ -617,33 +628,32 @@ bool prepararCapturaPorVision(ColorObjeto color) {
     return false;
   }
   if (!visionCentrar()) return false;
-  if (!visionAproximar(180, 44.0, 5.5)) return false;
+  if (!visionAproximar(150, 40.0, 5.0)) return false;
   visionCentrar(1.8);
-  return visionAproximar(VIS_DIST_PRECAPTURA_MM, 30.0, 4.0);
+  return visionAproximar(VIS_DIST_PRECAPTURA_MM, 28.0, 4.0);
 }
 
-// Esta es la secuencia de agarre de prueba_centrales. Se ejecuta despues de
-// que vision deja el artefacto en la misma pose inicial para la cual se afino.
+// Secuencia mecanica en 2 pasos de prueba_centrales.ino
 void capturarConRutinaProbada() {
-  bajarPala();
-  cerrarGarra();
-  retroceder(120, 25, 1.8);
-  _delay(0.25);
-  abrirGarra();
-  recolectar(3);
-  avanzar(90, 55, 1.0);
-  cerrarGarra();
-  bajarPala();
-  retroceder(360, 35, 3.5);
-  motoresParar();
+  bajarPala();                     // Asegurar 105°
+  cerrarGarra();                   // 1. Paletas pivotan al frente y atrapan artefacto de punta
+  retroceder(120, 25, 1.8);        // Extrae el artefacto aislándolo de la fila
+  _delay(0.5);
+
+  abrirGarra();                    // 2. Abre paletas
+  recolectar(3);                   // Baja pala a 111° ras de suelo
+  avanzar(90, 55, 1.0);            // Emboca completamente el artefacto
+  cerrarGarra();                   // Abraza firme
+  bajarPala();                     // Sube a 105° para despegar 6° del suelo y transportar
+  retroceder(360, 35, 3.5);        // Retrocede hasta la mitad de la pista
+  detener(0.5);
 }
 
 // =========================================================================
-// GEOMETRIA DE LA PISTA Y CICLO DE CUATRO ARTEFACTOS
+// GEOMETRIA DE LA PISTA Y CICLO DE ARTEFACTOS
 // =========================================================================
 
-// CALIBRAR. Centros de los cuatro cuadros negros separados aproximadamente
-// 130 mm en la pista oficial. El valor depende del diametro real de rueda.
+// Separacion entre centros de slots centrales
 const long PASO_SLOT_GRADOS = 220;
 const long OFFSET_SLOT_GRADOS[4] = {
   -(PASO_SLOT_GRADOS * 3L) / 2L,
@@ -652,22 +662,17 @@ const long OFFSET_SLOT_GRADOS[4] = {
   (PASO_SLOT_GRADOS * 3L) / 2L
 };
 
-// Primero los dos slots centrales y luego los exteriores.
 const byte ORDEN_SLOTS[4] = {1, 2, 0, 3};
 
-// Trayecto heredado de la prueba verde que ya llega al museo.
-const float GIRO_SALIDA_1 = 88.0;
+// Giros gyro para media vuelta (180°)
+const float GIRO_SALIDA_1 = 89.0;
 const float GIRO_SALIDA_2 = 89.0;
-const long RUTA_CRUCE_GRADOS = 128;
-const long RUTA_HASTA_STAGING_GRADOS = 500;  // 680 - aproximacion final
-const long APROX_MUSEO_GRADOS = 180;
+const long RUTA_HASTA_MUSEO_GRADOS = 620;
 
-// La ruta verde es la referencia. Los exhibidores estan en el orden oficial
-// ROJO, VERDE, NEGRO, AZUL, AMARILLO, de izquierda a derecha.
+// Expositores en orden oficial: ROJO, VERDE, NEGRO, AZUL, AMARILLO
 const int DESTINO_REFERENCIA = COLOR_VERDE;
-const long PASO_MUSEO_GRADOS = 205;  // CALIBRAR
+const long PASO_MUSEO_GRADOS = 195;  // Separacion entre casillas de museo
 
-// Poner temporalmente en 1 durante la primera prueba de banco/pista.
 const byte NUM_ARTEFACTOS_OBJETIVO = 4;
 const unsigned long LIMITE_RUTINA_MS = 116000UL;
 const unsigned long RESERVA_NUEVO_CICLO_MS = 26000UL;
@@ -676,7 +681,7 @@ bool quedaTiempo(unsigned long reservaMs) {
   return millis() - inicioRutinaMs + reservaMs < LIMITE_RUTINA_MS;
 }
 
-// Desplazamiento perpendicular al rumbo actual; termina con el mismo rumbo.
+// Desplazamiento perpendicular en L; termina con el mismo rumbo
 bool desplazarLateral(long grados) {
   if (grados == 0) return true;
   bool ok = true;
@@ -702,56 +707,54 @@ bool volverSlotACentro(byte slot) {
   return desplazarLateral(-OFFSET_SLOT_GRADOS[slot]);
 }
 
-bool irCentroAStagingMuseo() {
-  bool ok = true;
-  ok &= girarIzquierdaGyro(GIRO_SALIDA_1, 18.0);
-  ok &= moverRectoGyro(RUTA_CRUCE_GRADOS, 43.0, 3.5);
-  ok &= girarIzquierdaGyro(GIRO_SALIDA_2, 21.0);
-  ok &= moverRectoGyro(RUTA_HASTA_STAGING_GRADOS, 62.0, 6.0);
-  return ok;
-}
-
-bool volverStagingACentro() {
-  bool ok = true;
-  ok &= moverRectoGyro(-RUTA_HASTA_STAGING_GRADOS, 68.0, 6.0);
-  ok &= girarDerechaGyro(GIRO_SALIDA_2, 23.0);
-  ok &= moverRectoGyro(-RUTA_CRUCE_GRADOS, 48.0, 3.5);
-  ok &= girarDerechaGyro(GIRO_SALIDA_1, 23.0);
-  return ok;
-}
-
 long offsetDestino(ColorObjeto color) {
   if (color < COLOR_ROJO || color > COLOR_AMARILLO) return 0;
   return ((long)((int)color - DESTINO_REFERENCIA)) * PASO_MUSEO_GRADOS;
 }
 
-// La deposicion probada termina 45 grados mas atras que la pose de llegada:
-// -23 +68 -90 = -45.
-const long RETROCESO_NETO_DEPOSITO = 45;
-
+// Secuencia probada de deposito
 void depositarConRutinaProbada() {
-  recolectar(2);
-  retroceder(23, 26, 1.0);
-  recolectar(3);
-  abrirGarra();
-  barrer();
-  avanzar(68, 36, 0.75);
-  retroceder(90, 28, 1.0);
-  recolectar(3);
+  recolectar(2);             // 120°: presiona hacia abajo para asentar
+  retroceder(23, 26, 1.0);   // Despega de la cuña interna
+  recolectar(3);             // 111°: sube pala para que paletas abran sin rozar suelo
+  abrirGarra();              // Abre paletas
+  barrer();                  // 117°: pala en modo empuje frontal
+  avanzar(68, 36, 0.75);     // Empuja artefacto al expositor
+  retroceder(90, 28, 1.0);   // Retrocede suave para no arrastrarlo
+  recolectar(3);             // Sube pala
 }
 
-bool depositarColorDesdeStaging(ColorObjeto color) {
-  long lateral = offsetDestino(color);
+bool irSlotAMuseoYDepositar(byte slot, ColorObjeto color) {
+  // 1. Deshacer el desplazamiento lateral del slot para quedar en el centro
+  if (!volverSlotACentro(slot)) return false;
+
+  // 2. Dar media vuelta (180°) hacia los expositores del museo
   bool ok = true;
+  ok &= girarIzquierdaGyro(GIRO_SALIDA_1, 20.0);
+  ok &= girarIzquierdaGyro(GIRO_SALIDA_2, 20.0);
+
+  // 3. Desplazarse lateralmente al expositor correspondiente al color
+  long lateral = offsetDestino(color);
   ok &= desplazarLateral(lateral);
-  ok &= moverRectoGyro(APROX_MUSEO_GRADOS, 38.0, 4.0);
+
+  // 4. Avanzar recto hacia el expositor
+  ok &= moverRectoGyro(RUTA_HASTA_MUSEO_GRADOS, 60.0, 6.0);
   if (!ok) return false;
 
+  // 5. Depositar el artefacto con la rutina precisa
   depositarConRutinaProbada();
 
-  long retirada = APROX_MUSEO_GRADOS - RETROCESO_NETO_DEPOSITO;
-  if (retirada > 0) ok &= moverRectoGyro(-retirada, 42.0, 4.0);
+  // 6. Retorno seguro:
+  // Retroceso corto para despejar el expositor
+  retroceder(160, 45, 1.5);
+  // Deshacer el desplazamiento lateral en zona despejada
   ok &= desplazarLateral(-lateral);
+  // Media vuelta (180°) para volver mirando hacia los slots del centro
+  ok &= girarIzquierdaGyro(GIRO_SALIDA_1, 22.0);
+  ok &= girarIzquierdaGyro(GIRO_SALIDA_2, 22.0);
+  // Retornar al centro de la pista
+  ok &= moverRectoGyro(RUTA_HASTA_MUSEO_GRADOS - 160, 62.0, 6.0);
+
   return ok;
 }
 
@@ -792,15 +795,15 @@ bool procesarSlot(byte slot) {
     logPi("fallo en aproximacion; recuperando");
     moverRectoGyro(-180, 34.0, 3.0);
     if (!volverSlotACentro(slot)) falloNavegacion = true;
-    // Tras una aproximacion fallida la profundidad exacta ya no es fiable.
-    // Se despeja la fila, pero no se inicia otro ciclo a ciegas.
     falloNavegacion = true;
     return false;
   }
 
+  // Captura en 2 pasos y retroceso a mitad de pista
   capturarConRutinaProbada();
-  if (!volverSlotACentro(slot) || !irCentroAStagingMuseo() ||
-      !depositarColorDesdeStaging(color)) {
+
+  // Viaje al museo, deposito y retorno al centro para el proximo
+  if (!irSlotAMuseoYDepositar(slot, color)) {
     falloNavegacion = true;
     return false;
   }
@@ -855,6 +858,9 @@ void loop() {
   while (digitalRead(BOTON_PIN) == LOW) _loop();
   _delay(0.45);
 
+  bajarPala();  // Mantener la pala abajo para no obstruir la cámara al buscar artefactos
+  abrirGarra(); // Asegurar garra abierta para la visión
+
   rutinaIniciada = true;
   inicioRutinaMs = millis();
   SERIAL_VISION.println("S 1");
@@ -873,14 +879,6 @@ void loop() {
     bool depositado = procesarSlot(slot);
     if (falloNavegacion) {
       logPi("fallo critico de navegacion; fin seguro");
-      break;
-    }
-
-    if (intento + 1 < NUM_ARTEFACTOS_OBJETIVO &&
-        quedaTiempo(RESERVA_NUEVO_CICLO_MS)) {
-      if (depositado && !volverStagingACentro()) break;
-      // Si fallo antes de llegar al museo, procesarSlot ya regreso al centro.
-    } else {
       break;
     }
   }
