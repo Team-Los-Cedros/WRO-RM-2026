@@ -83,7 +83,14 @@
     "roi_y": [0.18, 0.68],
     "separacion_duplicado_frac": 0.08,
     "max_slots": 4,
-    "min_slots_validos": 4
+    "min_slots_validos": 4,
+    "reglas_color": {
+      "NEGRO": {
+        "area_min_px": 450,
+        "alto_min_px": 12,
+        "relacion_aspecto_max": 3.0
+      }
+    }
   },
 
   "destino": {

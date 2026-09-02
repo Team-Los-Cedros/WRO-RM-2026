@@ -30,7 +30,7 @@ import urllib.request
 ROOT_DIR = Path(__file__).resolve().parent.parent
 SESIONES_DIR = ROOT_DIR / "sesiones"
 DEFAULT_PI_URL = "http://192.168.0.166:8080"
-MSI_DEVICE_NAME = "MSI Star Cam 370i"
+DEFAULT_EXTERNAL_DEVICE = os.environ.get("WRO_CAMARA_EXTERNA", "Integrated Webcam")
 
 
 def detener_proceso_ffmpeg(proc, nombre="FFmpeg"):
@@ -51,7 +51,8 @@ def detener_proceso_ffmpeg(proc, nombre="FFmpeg"):
 
 
 def grabar_sesion(duracion=None, nombre=None, pi_url=DEFAULT_PI_URL,
-                  grabar_externa=True, grabar_robot=True, auto_analizar=True):
+                  grabar_externa=True, grabar_robot=True, auto_analizar=True,
+                  dispositivo_externo=DEFAULT_EXTERNAL_DEVICE):
     SESIONES_DIR.mkdir(parents=True, exist_ok=True)
     ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     tag = f"_{nombre}" if nombre else ""
@@ -105,18 +106,18 @@ def grabar_sesion(duracion=None, nombre=None, pi_url=DEFAULT_PI_URL,
             "-f", "dshow",
             "-video_size", "640x480",
             "-framerate", "30",
-            "-i", f"video={MSI_DEVICE_NAME}",
+            "-i", f"video={dispositivo_externo}",
             "-c:v", "libx264",
             "-preset", "veryfast",
             "-pix_fmt", "yuv420p",
             str(archivo_externa)
         ]
         try:
-            print(f"[MSI StarCam] Grabando 640x480 @ 30fps -> {archivo_externa.name}")
+            print(f"[Camara externa] {dispositivo_externo}: 640x480 @ 30fps -> {archivo_externa.name}")
             proc_externa = subprocess.Popen(cmd_externa, stdin=subprocess.PIPE,
                                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         except Exception as e:
-            print(f"[MSI StarCam] ERROR al arrancar FFmpeg para StarCam: {e}")
+            print(f"[Camara externa] ERROR al arrancar FFmpeg: {e}")
             proc_externa = None
 
     print("-" * 65)
@@ -197,6 +198,8 @@ def main():
     parser.add_argument("-n", "--nombre", type=str, default=None, help="Etiqueta descriptiva para la sesion")
     parser.add_argument("--ip-pi", type=str, default="192.168.0.166", help="IP o host de la Raspberry Pi")
     parser.add_argument("--puerto", type=int, default=8080, help="Puerto del servidor de vision de la Pi")
+    parser.add_argument("--camara-externa", default=DEFAULT_EXTERNAL_DEVICE,
+                        help="Nombre DirectShow de la camara externa")
     parser.add_argument("--solo-robot", action="store_true", help="Grabar solo la camara del robot")
     parser.add_argument("--solo-externa", action="store_true", help="Grabar solo la camara externa MSI")
     parser.add_argument("--no-analisis", action="store_true", help="No generar video side-by-side automaticamente")
@@ -212,7 +215,8 @@ def main():
         pi_url=pi_url,
         grabar_externa=grabar_externa,
         grabar_robot=grabar_robot,
-        auto_analizar=not args.no_analisis
+        auto_analizar=not args.no_analisis,
+        dispositivo_externo=args.camara_externa
     )
 
 

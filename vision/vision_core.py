@@ -605,12 +605,15 @@ class Detector:
         mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, self.kernel)
         return mask, y0
 
-    def candidatos(self, frame, color, hsv_roi=None, y0=None, y1=None):
+    def candidatos(self, frame, color, hsv_roi=None, y0=None, y1=None,
+                   reglas_extra=None):
         """Devuelve todos los contornos plausibles, ordenados por calidad."""
         if hsv_roi is None:
             hsv_roi, y0, y1 = self._preparar_hsv(frame)
         mask, y0 = self.mascara(frame, color, hsv_roi, y0, y1)
-        r = self.reglas.get(color, {})
+        r = dict(self.reglas.get(color, {}))
+        if reglas_extra:
+            r.update(reglas_extra)
         area_min = r.get("area_min_px", self.area_min)
         alto_min = r.get("alto_min_px", self.alto_min)
         aspecto_max = r.get("relacion_aspecto_max", self.aspecto_max)
@@ -711,7 +714,9 @@ class Detector:
         posibles = []
 
         for color in colores_disponibles(self.cfg):
-            candidatos, _, _ = self.candidatos(frame, color, hsv_roi, y0, y1)
+            reglas_fila = self.fila_cfg.get("reglas_color", {}).get(color, {})
+            candidatos, _, _ = self.candidatos(
+                frame, color, hsv_roi, y0, y1, reglas_extra=reglas_fila)
             for d in candidatos:
                 if y_min <= d.cy <= y_max and d.y_base <= y_max:
                     posibles.append(d)
