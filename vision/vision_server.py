@@ -363,7 +363,8 @@ def main():
     gestor.adquirir()
     
     cam = Camara(cfg["camara"]).abrir()
-    log("camara %dx%d abierta, buscando %s" % (cam.ancho, cam.alto, color))
+    log("camara %dx%d abierta, modo %s %s" %
+        (cam.ancho, cam.alto, modo, color))
 
     enlace = None
     if cfg["serial"].get("habilitado", True) and not args.sin_serial:
