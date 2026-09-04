@@ -16,6 +16,7 @@ MeGyro giroscopio(8);
 MePort placaExpansora(7); // Define el Puerto 7 como adaptador RJ25
 Servo servoGarra1;
 Servo servoGarra2;
+Servo miServo; // Declarado aquí arriba para que todas las funciones (como parabrisas) lo reconozcan
 
 double angle_rad = PI/180.0;
 double angle_deg = 180.0/PI;
@@ -488,14 +489,76 @@ void cerrarGarra() {
   _delay(1.0);
 }
 
+/**
+ * FUNCIÓN PARABRISAS:
+ * Mueve ambos micro-servos juntos hacia la izquierda y luego hacia la derecha.
+ * Se detiene inmediatamente al terminar la distancia de avance.
+ */
+void parabrisas(long pasos, float velocidad = 60.0) {
+  int izqS1 = 0;
+  int izqS2 = 0;
+  int derS1 = 180;
+  int derS2 = 180;
+
+  servoGarra1.write(izqS1);
+  servoGarra2.write(izqS2);
+  _delay(0.5);
+
+  miServo.write(115);
+  _delay(0.5);
+
+  long posInicialIzq = Encoder_1.getCurPos();
+  long posInicialDer = Encoder_2.getCurPos();
+
+  Encoder_1.move(pasos, abs(velocidad));
+  Encoder_2.move(-pasos, abs(velocidad * 1.02));
+
+  bool enIzquierda = true;
+
+  unsigned long inicioAvance = millis();
+  unsigned long timeoutAvance = (unsigned long)((pasos / abs(velocidad)) * 2000.0) + 2000;
+
+  while (true) {
+    _loop();
+
+    long avanceIzq = abs(Encoder_1.getCurPos() - posInicialIzq);
+    long avanceDer = abs(Encoder_2.getCurPos() - posInicialDer);
+    long promedioAvance = (avanceIzq + avanceDer) / 2;
+
+    if (promedioAvance >= (pasos - 15) || (millis() - inicioAvance > timeoutAvance)) {
+      break;
+    }
+
+    if (enIzquierda) {
+      servoGarra1.write(derS1);
+      servoGarra2.write(derS2);
+      enIzquierda = false;
+    } else {
+      servoGarra1.write(izqS1);
+      servoGarra2.write(izqS2);
+      enIzquierda = true;
+    }
+
+    _delay(0.35);
+  }
+
+  // Detener inmediatamente los motores y el movimiento de parabrisas al terminar de avanzar
+  Encoder_1.setTarPWM(0);
+  Encoder_2.setTarPWM(0);
+  _delay(0.1);
+
+  // Bajar la pala a 114 grados
+  miServo.write(114);
+  _delay(0.5);
+}
+
 // =========================================================================
 // DEL SERVOMOTOR GRANDE
 // =========================================================================
 
-Servo miServo;
 const int pinServo = 5;
-
 const int anguloBajar = 105;
+
 void subir_pala() {
   for (int angulo = anguloBajar; angulo >= 0; angulo--) {
     miServo.write(angulo);
@@ -563,7 +626,7 @@ void setup() {
   // Condición inicial: Empezar con la garra abierta
   abrirGarra();
 
-  //MOTORES
+  // MOTORES
 
   TCCR1A = _BV(WGM10);
   TCCR1B = _BV(CS11) | _BV(WGM12);
@@ -604,62 +667,61 @@ void loop() {
   // ==========================================
 
 /* colores no aleatorios*/
-/*
   girarDerechaGyro(85.0, 20.0);
-  avanzar(200, 80, 2.5);
+  avanzarRectoGyro(200, 50, 1.5, 2.5);
   girarIzquierdaGyro(85.0, 20.0);
  
-  avanzar(750, 80, 6.5);
+  avanzarRectoGyro(750, 50, 1.5, 6.5);
   recolectar(2);
   retroceder(600, 25, 4.5);
 
   girarIzquierdaGyro(85.0, 50.0);
-  avanzar(1300, 55, 4.5);
+   avanzarRectoGyro(1300, 55, 1.5, 4.5);
 
   // Estos dos giros de 90 se podrian unir en girarIzquierdaGyro(180.0, 50.0)
   // si la pausa de en medio no te hace falta. Los dejo tal cual por si la necesitas.
-  girarIzquierdaGyro(170.0, 50.0);
+ girarIzquierdaGyro(172.0, 30.0);
   subir_pala();
 
   retroceder(200, 25, 2.5);
   girarDerechaGyro(30.0, 50.0);
-  avanzar(220, 60, 3.5);
+  avanzar(320, 60, 3.5);
   recolectar(2);
-  girarDerechaGyro(60.0, 50.0);
+  girarDerechaGyro(50.0, 50.0);
 
   avanzar(510, 60, 3.5);
   recolectar(1);
-  avanzar(25, 60, 3.5);
+  avanzar(55, 60, 3.5);
   retroceder(450, 25, 4.5);
 
   // ---- ESTE ERA EL GIRO QUE FALLABA (cruzaba el +-180) ----
  
-  girarIzquierdaGyro(165.0, 50.0);
+  girarIzquierdaGyro(160.0, 50.0);
   avanzar(250, 60, 1.5);
-  avanzar(450, 60, 3.5);
+  avanzar(700, 60, 3.5);
 
-recolectar(1);
-retroceder(500, 25, 4.5);
-*/
-
- girarDerechaGyro(80.0, 50.0);
- avanzar(760, 60, 3.5);
- girarIzquierdaGyro(80.0, 50.0);
-
- avanzar(401, 60, 3.5);
- recolectar(2);
+girarIzquierdaGyro(20.0, 50.0);
 retroceder(650, 25, 4.5);
 
-girarIzquierdaGyro(82.0, 30.0);
-avanzar(2500, 60, 6.5);
-recolectar(1);
 
-retroceder(200, 25, 4.5);
-girarIzquierdaGyro(25.0, 50.0);
+ girarDerechaGyro(80.0, 50.0);
+ avanzar(860, 60, 3.5);
+ girarIzquierdaGyro(85.0, 50.0);
+
+ avanzar(460, 60, 3.5);
+ recolectar(2);
+ retroceder(680, 25, 4.5);
+
+ girarIzquierdaGyro(82.0, 30.0);
+ avanzar(2500, 60, 6.5);
+ recolectar(1);
+
+ retroceder(200, 25, 4.5);
+ girarIzquierdaGyro(25.0, 50.0);
  avanzar(300, 60, 3.5);
 
  recolectar(2);
- avanzar(700, 60, 3.5);
+ parabrisas(700);
 
   // Bucle infinito para que no repita la rutina en la competencia
   while(1) {
