@@ -9,7 +9,7 @@
 
 #define BOTON_PIN 4
 #define PIN_TCRT_IZQ A4
-#define PIN_TCRT_DER A3
+#define PIN_TCRT_DER 2
 
 MeGyro giroscopio(8);
 
@@ -223,7 +223,7 @@ void girarDerechaGyro(float gradosObjetivo, float velocidad) {
 // =========================================================================
 
 // Umbral analógico para diferenciar superficie clara de línea negra
-int UMBRAL_NEGRO_DER = 55;
+int UMBRAL_NEGRO_DER = 41;
 int UMBRAL_NEGRO_IZQ = 31;
 
 int leerLineaIzq() {
@@ -231,7 +231,7 @@ int leerLineaIzq() {
 }
 
 int leerLineaDer() {
-  return analogRead(PIN_TCRT_DER);
+  return digitalRead(PIN_TCRT_DER);
 }
 
 bool esNegroIzq() {
@@ -239,7 +239,8 @@ bool esNegroIzq() {
 }
 
 bool esNegroDer() {
-  return leerLineaDer() >= UMBRAL_NEGRO_DER;
+  //return leerLineaDer() >= UMBRAL_NEGRO_DER;
+  return leerLineaDer();
 }
 
 void imprimirSensoresLinea() {
@@ -469,6 +470,279 @@ void avanzarRectoGyro(long grados, float velocidadBase, float Kp = 1.5, float ti
 }
 
 // =========================================================================
+// AVANCE RECTO CON GYRO HASTA LÍNEA PERPENDICULAR
+// =========================================================================
+
+/**
+ * Centra el robot sobre una línea negra perpendicular.
+ * Hace micro-giros hacia el lado donde esté la línea hasta que ambos
+ * sensores queden en estado compatible con centrado.
+ *
+ * @param velocidadCentrado Velocidad de los micro-giros.
+ * @param timeoutSeg Tiempo máximo de centrado.
+ * @param ladoInicial +1 = línea vista a la izquierda, -1 = derecha, 0 = neutro.
+ */
+void centrarLineaPerpendicular(float velocidadCentrado,
+                               float timeoutSeg = 3.0,
+                               int ladoInicial = 0) {
+  unsigned long inicio = millis();
+  unsigned long timeoutMs = (unsigned long)(timeoutSeg * 1000.0);
+  float velFina = fabs(velocidadCentrado) * 0.6;
+
+  uint8_t confirmacionCentro = 0;
+  int ultimoLado = ladoInicial; // +1 izquierda, -1 derecha, 0 neutro
+
+  while (millis() - inicio < timeoutMs) {
+    _loop();
+
+    bool izq = esNegroIzq();
+    bool der = esNegroDer();
+
+    // Si ambos sensores están iguales, se considera que está centrado.
+    // Se pide unas pocas lecturas estables para evitar ruido.
+    if (izq && der) {
+      confirmacionCentro++;
+      ultimoLado = 0;
+      if (confirmacionCentro >= 2) break;
+    } 
+    else if (!izq && !der) {
+      confirmacionCentro++;
+      if (confirmacionCentro >= 4) break;
+    } 
+    else {
+      confirmacionCentro = 0;
+      if (izq && !der) ultimoLado = 1;
+      if (!izq && der) ultimoLado = -1;
+    }
+
+    float v = 0.0;
+
+    if (izq && !der) {
+      // Línea cargada a la izquierda: girar hacia la izquierda.
+      v = velFina;
+    } 
+    else if (!izq && der) {
+      // Línea cargada a la derecha: girar hacia la derecha.
+      v = -velFina;
+    } 
+    else if (ultimoLado != 0) {
+      // Si quedó momentáneamente en blanco, mantener el micro-giro
+      // hacia el último lado donde se vio línea.
+      v = velFina * ultimoLado;
+    }
+
+    Encoder_1.runSpeed(v);
+    Encoder_2.runSpeed(v);
+
+    delay(5);
+  }
+
+  Encoder_1.runSpeed(0);
+  Encoder_2.runSpeed(0);
+  _delay(0.1);
+}
+
+/**
+ * Avanza recto manteniendo el rumbo con giroscopio hasta detectar
+ * una línea negra perpendicular. Luego centra el robot sobre la línea.
+ *
+ * @param gradosMaximos Límite máximo de avance por encoder, por seguridad.
+ * @param velocidadBase Velocidad base de avance.
+ * @param gradosMinimosBusqueda Grados que debe avanzar antes de buscar línea.
+ * @param timeoutSeg Tiempo máximo de avance.
+ * @param Kp Ganancia de corrección de rumbo gyro.
+ * @param velocidadCentrado Velocidad para el centrado final.
+ * @param timeoutCentrado Tiempo máximo del centrado final.
+ */
+long posAvanceRelativo(long izq0, long der0) {
+  return ((Encoder_1.getCurPos() - izq0) - (Encoder_2.getCurPos() - der0)) / 2;
+}
+
+void aplicarRectoGyro(float vel, float Kp, float &desvio, float &angPrev) {
+  float ang = giroscopio.getAngleZ();
+  desvio += deltaAngulo(ang, angPrev);
+  angPrev = ang;
+
+  float corr = desvio * Kp;
+  Encoder_1.runSpeed(vel - corr);
+  Encoder_2.runSpeed(-(vel + corr));
+}
+
+void avanzarRectoGyroLineaPerpendicular(long gradosMaximos,
+                                        float velocidadBase,
+                                        float timeoutSeg = 10.0,
+                                        long rango = 135,
+                                        long offsetCentro = 0,
+                                        float velocidadEscaneo = 10.0,
+                                        float Kp = 1.5,
+                                        float gradosMinimosBusqueda = 0.0) {
+
+  // ======================================================
+  // 1) AVANZAR HASTA DETECTAR LÍNEA
+  // ======================================================
+  giroscopio.update();
+  float desvio = 0.0;
+  float angPrev = giroscopio.getAngleZ();
+
+  long izq0 = Encoder_1.getCurPos();
+  long der0 = Encoder_2.getCurPos();
+
+  unsigned long ini = millis();
+  unsigned long timeoutMs = (unsigned long)(timeoutSeg * 1000.0);
+
+  bool detectada = false;
+
+  while (millis() - ini < timeoutMs) {
+    _loop();
+
+    long av = (abs(Encoder_1.getCurPos() - izq0) + abs(Encoder_2.getCurPos() - der0)) / 2;
+
+    if (av >= gradosMaximos) break;
+
+    if ((float)av >= gradosMinimosBusqueda && (esNegroIzq() && esNegroDer())) {
+      detectada = true;
+      break;
+    }
+
+    aplicarRectoGyro(fabs(velocidadBase), Kp, desvio, angPrev);
+    delay(5);
+  }
+
+  Encoder_1.runSpeed(0);
+  Encoder_2.runSpeed(0);
+  _delay(0.05);
+
+  if (!detectada) return;
+
+  // ======================================================
+  // 2) BARRIDO ADELANTE / ATRÁS PARA CALCULAR EL CENTRO
+  // ======================================================
+  float kp = (Kp > 1.2) ? 1.2 : Kp;
+
+  izq0 = Encoder_1.getCurPos();
+  der0 = Encoder_2.getCurPos();
+
+  desvio = 0.0;
+  giroscopio.update();
+  angPrev = giroscopio.getAngleZ();
+
+  long minLinea = 1000000;
+  long maxLinea = -1000000;
+
+  long minAmbos = 1000000;
+  long maxAmbos = -1000000;
+
+  long mejorPos = 0;
+  long mejorAnalog = -1;
+  int mejorScore = -1;
+
+  bool bandaLinea = false;
+  bool bandaAmbos = false;
+
+  long destinos[2] = {rango, -rango};
+
+  for (byte i = 0; i < 2; i++) {
+    ini = millis();
+
+    while (millis() - ini < 4000UL) {
+      _loop();
+
+      long p = posAvanceRelativo(izq0, der0);
+      long err = destinos[i] - p;
+      long errAbs = (err >= 0) ? err : -err;
+
+      if (errAbs <= 3) break;
+
+      int li = leerLineaIzq();
+      int ld = leerLineaDer();
+
+      bool izq = li >= UMBRAL_NEGRO_IZQ;
+      bool der = ld >= UMBRAL_NEGRO_DER;
+
+      int sc = (izq ? 1 : 0) + (der ? 1 : 0);
+      long analog = (long)li + ld;
+
+      // Mejor posición por si no se logra medir bien la banda.
+      if (sc > mejorScore || (sc == mejorScore && analog > mejorAnalog)) {
+        mejorScore = sc;
+        mejorAnalog = analog;
+        mejorPos = p;
+      }
+
+      // Banda donde al menos un sensor ve negro.
+      if (sc > 0) {
+        if (p < minLinea) minLinea = p;
+        if (p > maxLinea) maxLinea = p;
+        bandaLinea = true;
+      }
+
+      // Banda donde ambos sensores ven negro.
+      if (izq && der) {
+        if (p < minAmbos) minAmbos = p;
+        if (p > maxAmbos) maxAmbos = p;
+        bandaAmbos = true;
+      }
+
+      aplicarRectoGyro((err > 0 ? fabs(velocidadEscaneo) : -fabs(velocidadEscaneo)),
+                       kp,
+                       desvio,
+                       angPrev);
+
+      delay(5);
+    }
+  }
+
+  Encoder_1.runSpeed(0);
+  Encoder_2.runSpeed(0);
+
+  if (!bandaLinea && mejorScore <= 0) return;
+
+  // ======================================================
+  // 3) CALCULAR OBJETIVO Y MOVER AL CENTRO
+  // ======================================================
+  long objetivo;
+
+  if (bandaAmbos) {
+    // Si ambos sensores vieron la línea, usar el centro de esa banda.
+    objetivo = (minAmbos + maxAmbos) / 2;
+  } else if (bandaLinea) {
+    // Si solo un sensor la vio, usar igualmente el centro del tramo negro.
+    objetivo = (minLinea + maxLinea) / 2;
+  } else {
+    objetivo = mejorPos;
+  }
+
+  // Offset fino por si el robot queda ligeramente adelantado/atrás.
+  objetivo += offsetCentro;
+
+  desvio = 0.0;
+  giroscopio.update();
+  angPrev = giroscopio.getAngleZ();
+
+  ini = millis();
+
+  while (millis() - ini < 2500UL) {
+    _loop();
+
+    long err = objetivo - posAvanceRelativo(izq0, der0);
+    long errAbs = (err >= 0) ? err : -err;
+
+    if (errAbs <= 2) break;
+
+    aplicarRectoGyro((err > 0 ? fabs(velocidadEscaneo) : -fabs(velocidadEscaneo)),
+                     kp,
+                     desvio,
+                     angPrev);
+
+    delay(5);
+  }
+
+  Encoder_1.runSpeed(0);
+  Encoder_2.runSpeed(0);
+  _delay(0.1);
+}
+
+// =========================================================================
 // DE LOS SERVOMOTORES PEQUEÑOS
 // =========================================================================
 
@@ -673,21 +947,24 @@ void loop() {
  
   avanzarRectoGyro(750, 50, 1.5, 6.5);
   recolectar(2);
-  retroceder(600, 25, 4.5);
+  retroceder(400, 25, 4.5);
 
-  girarIzquierdaGyro(85.0, 50.0);
-   avanzarRectoGyro(1300, 55, 1.5, 4.5);
+  girarIzquierdaGyro(82.0, 35.0);
+  avanzarRectoGyro(1145, 145, 6.0, 4.5);
+  _delay(1.0);
+  avanzarRectoGyroLineaPerpendicular(730, 45, 10.0, 90, 4);
+  _delay(0.5);
 
   // Estos dos giros de 90 se podrian unir en girarIzquierdaGyro(180.0, 50.0)
   // si la pausa de en medio no te hace falta. Los dejo tal cual por si la necesitas.
- girarIzquierdaGyro(172.0, 30.0);
+  girarIzquierdaGyro(172.0, 30.0);
   subir_pala();
 
   retroceder(200, 25, 2.5);
-  girarDerechaGyro(30.0, 50.0);
-  avanzar(320, 60, 3.5);
+  girarDerechaGyro(30.0, 40.0);
+  avanzar(366, 60, 3.5);
   recolectar(2);
-  girarDerechaGyro(50.0, 50.0);
+  girarDerechaGyro(50.0, 40.0);
 
   avanzar(510, 60, 3.5);
   recolectar(1);
@@ -708,7 +985,7 @@ retroceder(650, 25, 4.5);
  avanzar(860, 60, 3.5);
  girarIzquierdaGyro(85.0, 50.0);
 
- avanzar(460, 60, 3.5);
+ avanzar(660, 60, 3.5);
  recolectar(2);
  retroceder(680, 25, 4.5);
 
