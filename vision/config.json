@@ -94,13 +94,13 @@
   },
 
   "destino": {
-    "roi_y": [0.04, 0.80],
+    "roi_y": [0.04, 0.85],
     "area_min_px": 120,
     "relacion_aspecto_min": 0.45,
     "relacion_aspecto_max": 2.45,
-    "relleno_min": 0.58,
+    "relleno_min": 0.55,
     "fraccion_area_maxima_min": 0.30,
-    "marco_blanco_min": 0.12,
+    "marco_blanco_min": 0.0,
     "margen_marco_frac": 0.45,
     "blanco_s_max": 70,
     "blanco_v_min": 120,
@@ -115,11 +115,11 @@
 
   "colores_destino": {
     "_comentario": "La tinta plana de los cuadros es mas oscura que el plastico 3D.",
-    "ROJO": [[0, 90, 45, 12, 255, 255], [166, 90, 45, 179, 255, 255]],
+    "ROJO": [[0, 120, 45, 15, 255, 255], [160, 120, 45, 179, 255, 255]],
     "VERDE": [[60, 100, 25, 100, 255, 110]],
-    "AZUL": [[90, 70, 30, 138, 255, 255]],
+    "AZUL": [[84, 77, 30, 147, 255, 255]],
     "AMARILLO": [[28, 150, 100, 40, 255, 220]],
-    "NEGRO": [[0, 0, 0, 179, 130, 80]]
+    "NEGRO": [[0, 0, 0, 179, 255, 80]]
   },
 
   "colores": {
@@ -127,8 +127,8 @@
     "ROJO":     [[0, 120, 70, 10, 255, 255], [168, 120, 70, 179, 255, 255]],
     "VERDE":    [[38, 80, 60, 85, 255, 255]],
     "AZUL":     [[95, 110, 60, 128, 255, 255]],
-    "AMARILLO": [[20, 110, 110, 34, 255, 255]],
-    "NEGRO":    [[0, 0, 0, 179, 110, 55]]
+    "AMARILLO": [[10, 150, 60, 52, 255, 255]],
+    "NEGRO":    [[0, 0, 0, 179, 199, 85]]
   },
 
   "reglas_color": {

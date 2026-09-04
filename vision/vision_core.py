@@ -774,10 +774,14 @@ class Detector:
             x, y, w, h = cv2.boundingRect(c)
             if w == 0 or h == 0:
                 continue
-            # Un contorno cortado por el borde de la ROI suele ser fondo de
-            # pista; un cuadro completo del museo no debe tocar ese borde.
-            if y <= 1 or y + h >= (y1 - y0) - 1:
+            # El borde superior suele ser fondo lejano o pared.
+            # En el borde inferior, si el área es grande (objeto cercano al depositar),
+            # no lo descartamos para no perderlo al aproximar.
+            if y <= 1:
                 continue
+            if (y + h >= (y1 - y0) - 1) and area < area_min * 2.5:
+                continue
+
             aspecto = w / float(h)
             relleno = area / float(w * h)
             if not aspecto_min <= aspecto <= aspecto_max or relleno < relleno_min:
@@ -794,13 +798,14 @@ class Detector:
                       (anillo > 0))
             total_anillo = max(int(np.count_nonzero(anillo)), 1)
             frac_blanco = np.count_nonzero(blanco) / float(total_anillo)
-            if frac_blanco < blanco_min:
+            if blanco_min > 0.0 and frac_blanco < blanco_min:
                 continue
 
             perimetro = cv2.arcLength(c, True)
             vertices = len(cv2.approxPolyDP(c, 0.04 * perimetro, True))
             q_forma = min(1.0, relleno)
-            q_marco = min(1.0, frac_blanco / max(blanco_min * 2.5, 0.01))
+            q_marco = (min(1.0, frac_blanco / max(blanco_min * 2.5, 0.01))
+                       if blanco_min > 0.0 else 0.8)
             q_cuatro = 1.0 if 4 <= vertices <= 6 else 0.4
             q_centro = max(0.0, 1.0 - abs((x + w / 2.0) - self.cx_garra) /
                            max(ancho / 2.0, 1.0))

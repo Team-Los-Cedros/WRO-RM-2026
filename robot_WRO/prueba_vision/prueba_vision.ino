@@ -821,6 +821,9 @@ const long RETROCESO_DESPEJE_MUSEO_GRADOS = 160;
 // Depositar retrocede 23, avanza 68 y retrocede 90: queda 45 grados mas
 // lejos del expositor. Ese desplazamiento tambien cuenta en el retorno.
 const long RETROCESO_NETO_DEPOSITO_GRADOS = 45;
+// Compensacion para reponer el retroceso acumulado de la captura (360 - ~220 = 140 grados)
+// de modo que el robot quede de nuevo a distancia optima de vision en el siguiente slot.
+const long COMPENSACION_RETORNO_SLOTS_GRADOS = 140;
 
 // Expositores en orden oficial: ROJO, VERDE, NEGRO, AZUL, AMARILLO
 // El eje horizontal que une el centro de los artefactos con el museo llega
@@ -892,18 +895,24 @@ bool irSlotAMuseoYDepositar(byte slot, ColorObjeto color) {
   long lateral = offsetDestino(color);
   if (!desplazarLateral(lateral)) return false;
 
-  // 4. Avanzar recto hacia el expositor
-  if (!moverRectoGyro(RUTA_HASTA_MUSEO_GRADOS, 60.0, 6.0)) return false;
-
-  // Correccion final por un detector exclusivo de cuadros planos. Si no hay
-  // una lectura estable se conserva la pose odometrica en vez de buscar a
-  // ciegas entre colores de la pista.
+  // 4. Activar visión de destino anticipada durante la aproximación
   visionPedirDestino(color);
-  _delay(0.30);
+  _delay(0.20);
+
+  // Avance inicial hacia el museo (~340 grados) mientras la cámara enfoca el cuadro desde lejos
+  if (!moverRectoGyro(340, 60.0, 4.0)) return false;
+
+  // Si ya detecta el cuadro de destino, centrar rumbo temprano
+  if (visionVeObjeto(300)) {
+    visionCentrar(1.2);
+  }
+
+  // Completar avance restante hacia la posición de depósito
+  if (!moverRectoGyro(RUTA_HASTA_MUSEO_GRADOS - 340, 50.0, 4.0)) return false;
+
+  // Corrección final frente al expositor
   bool destinoVisible = visionVeObjeto(600);
   if (!destinoVisible) {
-    // En modo DESTINO solo se aceptan cuadros planos con borde blanco.
-    // El barrido corto no puede seguir el artefacto que lleva la garra.
     destinoVisible = visionBuscar(18.0, 16.0);
   }
   if (destinoVisible) {
@@ -929,10 +938,11 @@ bool irSlotAMuseoYDepositar(byte slot, ColorObjeto color) {
   // Media vuelta (180°) para volver mirando hacia los slots del centro
   if (!girarIzquierdaGyro(GIRO_SALIDA_1, 22.0)) return false;
   if (!girarIzquierdaGyro(GIRO_SALIDA_2, 22.0)) return false;
-  // Retornar al centro de la pista
+  // Retornar al centro de la pista y reponer cota Y de escaneo
   long retorno = RUTA_HASTA_MUSEO_GRADOS -
                  RETROCESO_DESPEJE_MUSEO_GRADOS -
-                 RETROCESO_NETO_DEPOSITO_GRADOS;
+                 RETROCESO_NETO_DEPOSITO_GRADOS +
+                 COMPENSACION_RETORNO_SLOTS_GRADOS;
   if (!moverRectoGyro(retorno, 62.0, 6.0)) return false;
   if (rumboReferenciaValido &&
       !alinearRumboGyro(rumboReferenciaSlots)) return false;
