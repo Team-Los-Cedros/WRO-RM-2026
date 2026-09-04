@@ -604,7 +604,7 @@ void loop() {
   // ==========================================
 
 /* colores no aleatorios*/
-
+/*
   girarDerechaGyro(85.0, 20.0);
   avanzar(200, 80, 2.5);
   girarIzquierdaGyro(85.0, 20.0);
@@ -618,7 +618,7 @@ void loop() {
 
   // Estos dos giros de 90 se podrian unir en girarIzquierdaGyro(180.0, 50.0)
   // si la pausa de en medio no te hace falta. Los dejo tal cual por si la necesitas.
-  girarIzquierdaGyro(175.0, 50.0);
+  girarIzquierdaGyro(170.0, 50.0);
   subir_pala();
 
   retroceder(200, 25, 2.5);
@@ -629,17 +629,37 @@ void loop() {
 
   avanzar(510, 60, 3.5);
   recolectar(1);
-  retroceder(500, 25, 4.5);
+  avanzar(25, 60, 3.5);
+  retroceder(450, 25, 4.5);
 
   // ---- ESTE ERA EL GIRO QUE FALLABA (cruzaba el +-180) ----
-  girarIzquierdaGyro(170.0, 50.0);
-
+ 
+  girarIzquierdaGyro(165.0, 50.0);
   avanzar(250, 60, 1.5);
-  girarIzquierdaGyro(30.0, 50.0);
-  avanzar(460, 60, 3.5);
+  avanzar(450, 60, 3.5);
 
 recolectar(1);
 retroceder(500, 25, 4.5);
+*/
+
+ girarDerechaGyro(80.0, 50.0);
+ avanzar(760, 60, 3.5);
+ girarIzquierdaGyro(80.0, 50.0);
+
+ avanzar(401, 60, 3.5);
+ recolectar(2);
+retroceder(650, 25, 4.5);
+
+girarIzquierdaGyro(82.0, 30.0);
+avanzar(2500, 60, 6.5);
+recolectar(1);
+
+retroceder(200, 25, 4.5);
+girarIzquierdaGyro(25.0, 50.0);
+ avanzar(300, 60, 3.5);
+
+ recolectar(2);
+ avanzar(700, 60, 3.5);
 
   // Bucle infinito para que no repita la rutina en la competencia
   while(1) {
