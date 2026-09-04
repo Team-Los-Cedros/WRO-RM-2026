@@ -13,13 +13,13 @@
     "voltear_180": false,
     "roi_y": [0.30, 1.00],
     "auto_exposicion": false,
-    "exposicion_absoluta": 180,
+    "exposicion_absoluta": 210,
     "auto_balance_blancos": false,
     "temperatura_color": 4500,
     "frecuencia_red_hz": 60,
     "ganancia": 25,
-    "brillo": 8,
-    "contraste": 33,
+    "brillo": 7,
+    "contraste": 37,
     "saturacion": 68,
     "gamma": 100,
     "sharpness": 2,
@@ -94,11 +94,12 @@
   },
 
   "destino": {
-    "roi_y": [0.04, 0.62],
+    "roi_y": [0.04, 0.80],
     "area_min_px": 120,
     "relacion_aspecto_min": 0.45,
-    "relacion_aspecto_max": 2.2,
+    "relacion_aspecto_max": 2.45,
     "relleno_min": 0.58,
+    "fraccion_area_maxima_min": 0.30,
     "marco_blanco_min": 0.12,
     "margen_marco_frac": 0.45,
     "blanco_s_max": 70,
@@ -115,9 +116,9 @@
   "colores_destino": {
     "_comentario": "La tinta plana de los cuadros es mas oscura que el plastico 3D.",
     "ROJO": [[0, 90, 45, 12, 255, 255], [166, 90, 45, 179, 255, 255]],
-    "VERDE": [[35, 45, 25, 95, 255, 220]],
+    "VERDE": [[60, 100, 25, 100, 255, 110]],
     "AZUL": [[90, 70, 30, 138, 255, 255]],
-    "AMARILLO": [[15, 70, 70, 42, 255, 255]],
+    "AMARILLO": [[28, 150, 100, 40, 255, 220]],
     "NEGRO": [[0, 0, 0, 179, 130, 80]]
   },
 
@@ -136,6 +137,9 @@
       "area_min_px": 1000,
       "alto_min_px": 25,
       "relacion_aspecto_max": 2.0
+    },
+    "VERDE": {
+      "area_max_px": 6500
     },
     "AZUL": {
       "rechazar_inferior_lateral": true,

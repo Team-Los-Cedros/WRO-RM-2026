@@ -76,6 +76,16 @@ class DetectorTest(unittest.TestCase):
         self.assertTrue(det.encontrado)
         self.assertGreater(det.ex, 50)
 
+    def test_masa_verde_grande_de_pista_se_rechaza(self):
+        frame = self.frame()
+        # Region compacta dentro de la ROI: sin limite superior pasaria los
+        # filtros de area minima, altura y aspecto como si fuera un artefacto.
+        cv2.rectangle(frame, (110, 115), (570, 265), (0, 150, 0), -1)
+
+        det, _, _ = self.detector.detectar(frame, "VERDE")
+
+        self.assertFalse(det.encontrado)
+
     def test_auto_elige_el_artefacto_mas_centrado(self):
         frame = self.frame()
         # Artefacto verde a la izquierda
@@ -120,6 +130,21 @@ class DetectorTest(unittest.TestCase):
         det, _, _ = self.detector.detectar_destino(frame, "ROJO")
 
         self.assertFalse(det.encontrado)
+
+    def test_destino_prefiere_cuadro_grande_a_ruido_centrado(self):
+        frame = np.full((self.alto, self.ancho, 3), 80, dtype=np.uint8)
+        # Destino real lateral con marco blanco.
+        cv2.rectangle(frame, (405, 75), (575, 195), (245, 245, 245), -1)
+        cv2.rectangle(frame, (430, 105), (550, 170), (0, 0, 220), -1)
+        # Mancha pequena casi centrada, tambien cuadrada y rodeada de blanco.
+        cv2.rectangle(frame, (295, 100), (345, 150), (245, 245, 245), -1)
+        cv2.rectangle(frame, (310, 115), (330, 135), (0, 0, 220), -1)
+
+        det, _, _ = self.detector.detectar_destino(frame, "ROJO")
+
+        self.assertTrue(det.encontrado)
+        self.assertGreater(det.cx, 450)
+        self.assertGreater(det.area, 5000)
 
     def test_azul_inferior_lateral_no_es_artefacto(self):
         frame = self.frame()

@@ -33,7 +33,8 @@ cat <<EOF
 
 Listo.
 
-  Calibrar colores:   python3 $DIR/calibrar_web.py      -> http://\$(hostname -I | awk '{print \$1}'):8081
+  Calibrar artefactos: python3 $DIR/calibrar_web.py      -> http://\$(hostname -I | awk '{print \$1}'):8081
+  Calibrar destinos:  python3 $DIR/calibrar_destinos.py -> http://\$(hostname -I | awk '{print \$1}'):8083
   Probar sin MegaPi:  python3 $DIR/vision_server.py --sin-serial --web
   Autoarranque:       sudo cp $DIR/wro-vision.service /etc/systemd/system/
                       sudo systemctl daemon-reload

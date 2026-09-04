@@ -157,7 +157,7 @@ real. La opción **Auto-Medir y Fijar** mide la escena y deja exposición y
 balance en manual para que el HSV no cambie mientras el robot se mueve. Guarda
 el resultado en `config.json` antes de calibrar los colores.
 
-Después ejecuta el calibrador HSV y de geometría:
+Después ejecuta el calibrador HSV de artefactos y de geometría:
 
 Ejecuta:
 
@@ -175,6 +175,23 @@ manuales. Verifica especialmente:
 
 Si cambia la cámara o el soporte, corrige `zonas_ignoradas` en `config.json`.
 Sus coordenadas son fracciones `[x0, y0, x1, y1]` de la imagen.
+
+Los cuadros planos del museo usan tinta y condiciones de luz distintas al
+plástico de los artefactos. Calíbralos por separado:
+
+```bash
+python3 calibrar_destinos.py
+```
+
+Abre `http://192.168.0.166:8083`. Este segundo calibrador modifica únicamente
+`colores_destino`, permite ajustar la ROI vertical, muestra su máscara HSV y
+ejecuta a la vez el detector real de cuadros (color, forma y marco blanco).
+Para cada color, comprueba el cuadro desde varias distancias y pequeños
+ángulos: la ROI debe contener el cuadro completo, la máscara no debe cubrir la
+pista y el rectángulo verde debe permanecer sobre el mismo cuadro. El panel
+indica también aspecto, relleno, porcentaje de marco blanco y la causa exacta
+del rechazo del mayor contorno. El botón
+**Descartar y recargar** recupera los valores guardados en disco.
 
 ### 2. Centro y distancia
 
@@ -203,16 +220,17 @@ Si izquierda y derecha quedaron invertidas, invierte los signos del arreglo
 
 ### 4. Museo
 
-La ruta verde probada se dividió en `500 + 180 = 680` grados:
+La ruta recta vigente es `RUTA_HASTA_MUSEO_GRADOS = 620`; el expositor negro
+es la referencia central y `PASO_MUSEO_GRADOS = 195` es la separación lateral
+inicial que aún debe medirse sobre la pista definitiva. El retorno descuenta
+los 160 grados del despeje y los 45 grados netos de la secuencia de depósito,
+por lo que recorre `620 - 160 - 45 = 415` grados.
 
-- `RUTA_CRUCE_GRADOS = 128`
-- `RUTA_HASTA_STAGING_GRADOS = 500`
-- `APROX_MUSEO_GRADOS = 180`
-- `PASO_MUSEO_GRADOS = 205` (medir)
-
-La referencia es el exhibidor verde. Prueba primero verde; luego rojo; luego
-negro, azul y amarillo. El lateral se ejecuta 180 grados de encoder antes de la
-fila, por lo que ninguna rueda o garra debería tocar un objeto ya puntuado.
+El rumbo frente a los slots se guarda al comenzar. Tras centrar visualmente el
+destino se recupera primero el rumbo del museo, y antes de iniciar el siguiente
+slot se vuelve a la referencia absoluta de salida. Una corrección superior a
+30 grados se considera incoherente y detiene el ciclo en vez de ejecutar un
+giro peligroso.
 
 ### 5. Ciclo y tiempo
 
@@ -270,6 +288,7 @@ desde la MegaPi; ambas solo comparten el enlace USB o la masa si se usa UART.
 | `config.json` | Cámara, HSV, zonas ignoradas, geometría y serial |
 | `calibrar_camara.py` | Exposición, balance de blancos y controles UVC desde navegador |
 | `calibrar_web.py` | Calibración HSV y geometría desde navegador |
+| `calibrar_destinos.py` | Calibración HSV exclusiva de cuadros planos del museo |
 | `test_detector.py` | Pruebas sintéticas del selector y las máscaras |
 | `test_protocolo.py` | Prueba integral con puerto serie virtual |
 | `wro-vision.service` | Unidad systemd opcional |

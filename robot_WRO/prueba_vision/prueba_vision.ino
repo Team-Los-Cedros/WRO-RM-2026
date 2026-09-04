@@ -39,10 +39,15 @@ const int PIN_SERVO_PALA = 5;
 bool rutinaIniciada = false;
 bool falloNavegacion = false;
 unsigned long inicioRutinaMs = 0;
+float rumboReferenciaSlots = 0.0;
+bool rumboReferenciaValido = false;
+int signoGyroDerecha = 0;
 
 void _loop();
 void _delay(float segundos);
 void motoresParar();
+bool alinearRumboGyro(float rumboObjetivo, float tolerancia = 2.5,
+                      float correccionMax = 30.0);
 
 void isr_process_encoder1(void) {
   if (digitalRead(Encoder_1.getPortB()) == 0) Encoder_1.pulsePosMinus();
@@ -493,6 +498,7 @@ bool girarGyro(int sentido, float gradosObjetivo, float velocidadMax) {
   giroscopio.update();
   float anguloAnterior = giroscopio.getAngleZ();
   float girado = 0.0;
+  float giroFirmado = 0.0;
   unsigned long inicio = millis();
 
   while (millis() - inicio < 5000) {
@@ -504,10 +510,16 @@ bool girarGyro(int sentido, float gradosObjetivo, float velocidadMax) {
     if (delta > 180.0) delta -= 360.0;
     if (delta < -180.0) delta += 360.0;
     girado += abs(delta);
+    giroFirmado += delta;
     anguloAnterior = anguloActual;
     float restante = gradosObjetivo - girado;
     if (restante <= 0.0) {
       motoresParar();
+      if (abs(giroFirmado) > 10.0) {
+        // Aprende una vez por movimiento si un giro fisico a la derecha
+        // aumenta o disminuye el angulo Z de este montaje del giroscopio.
+        signoGyroDerecha = giroFirmado * sentido > 0.0 ? +1 : -1;
+      }
       _delay(0.18);
       return true;
     }
@@ -530,6 +542,45 @@ bool girarDerechaGyro(float grados, float velocidad) {
 
 bool girarIzquierdaGyro(float grados, float velocidad) {
   return girarGyro(-1, grados, velocidad);
+}
+
+float deltaAngular(float objetivo, float actual) {
+  float delta = objetivo - actual;
+  while (delta > 180.0) delta -= 360.0;
+  while (delta < -180.0) delta += 360.0;
+  return delta;
+}
+
+// Recupera un rumbo absoluto despues de los giros de vision y de las L.
+// Limita la correccion para no ejecutar una media vuelta inesperada si el
+// giroscopio entrega una lectura incoherente.
+bool alinearRumboGyro(float rumboObjetivo, float tolerancia,
+                      float correccionMax) {
+  for (int intento = 0; intento < 3; intento++) {
+    giroscopio.update();
+    float error = deltaAngular(rumboObjetivo, giroscopio.getAngleZ());
+    if (abs(error) <= tolerancia) {
+      motoresParar();
+      _delay(0.10);
+      return true;
+    }
+    if (signoGyroDerecha == 0 || abs(error) > correccionMax) {
+      logPi("rumbo fuera de rango seguro");
+      motoresParar();
+      return false;
+    }
+
+    int sentido = error * signoGyroDerecha > 0.0 ? +1 : -1;
+    if (!girarGyro(sentido, abs(error), 18.0)) return false;
+  }
+
+  giroscopio.update();
+  if (abs(deltaAngular(rumboObjetivo, giroscopio.getAngleZ())) <= tolerancia) {
+    return true;
+  }
+  logPi("no se pudo recuperar rumbo");
+  motoresParar();
+  return false;
 }
 
 // =========================================================================
@@ -601,6 +652,7 @@ const float VIS_KP_AVANCE = 0.22;
 const int VIS_DIST_PRECAPTURA_MM = 75; // Distancia donde las paletas MG-90 abrazan de punta el artefacto
 const int VIS_Y_PRECAPTURA = 338;      // En 640x360, y=338 corresponde a ~70 mm
 const long VIS_GRADOS_CIEGOS = 90;     // ~5 cm de avance si entra al punto ciego inferior
+const float VIS_TIMEOUT_CENTRADO_DESTINO = 4.5;
 
 float velocidadGiroVision(int ex) {
   float v = limitar(VIS_KP_GIRO * abs(ex), VIS_VEL_GIRO_MIN, VIS_VEL_GIRO_MAX);
@@ -765,6 +817,10 @@ const byte ORDEN_SLOTS[4] = {1, 2, 0, 3};
 const float GIRO_SALIDA_1 = 89.0;
 const float GIRO_SALIDA_2 = 89.0;
 const long RUTA_HASTA_MUSEO_GRADOS = 620;
+const long RETROCESO_DESPEJE_MUSEO_GRADOS = 160;
+// Depositar retrocede 23, avanza 68 y retrocede 90: queda 45 grados mas
+// lejos del expositor. Ese desplazamiento tambien cuenta en el retorno.
+const long RETROCESO_NETO_DEPOSITO_GRADOS = 45;
 
 // Expositores en orden oficial: ROJO, VERDE, NEGRO, AZUL, AMARILLO
 // El eje horizontal que une el centro de los artefactos con el museo llega
@@ -829,6 +885,8 @@ bool irSlotAMuseoYDepositar(byte slot, ColorObjeto color) {
   // 2. Dar media vuelta (180°) hacia los expositores del museo
   if (!girarIzquierdaGyro(GIRO_SALIDA_1, 20.0)) return false;
   if (!girarIzquierdaGyro(GIRO_SALIDA_2, 20.0)) return false;
+  giroscopio.update();
+  float rumboMuseo = giroscopio.getAngleZ();
 
   // 3. Desplazarse lateralmente al expositor correspondiente al color
   long lateral = offsetDestino(color);
@@ -849,7 +907,9 @@ bool irSlotAMuseoYDepositar(byte slot, ColorObjeto color) {
     destinoVisible = visionBuscar(18.0, 16.0);
   }
   if (destinoVisible) {
-    if (!visionCentrar(2.0)) logPi("destino visible pero no centro estable");
+    if (!visionCentrar(VIS_TIMEOUT_CENTRADO_DESTINO)) {
+      logPi("destino visible pero no centro estable");
+    }
   } else {
     logPi("destino no visible; usando llegada odometrica");
   }
@@ -860,14 +920,22 @@ bool irSlotAMuseoYDepositar(byte slot, ColorObjeto color) {
 
   // 6. Retorno seguro:
   // Retroceso corto para despejar el expositor
-  retroceder(160, 45, 1.5);
+  retroceder(RETROCESO_DESPEJE_MUSEO_GRADOS, 45, 1.5);
+  // visionCentrar modifica el rumbo. Se recupera el eje del museo antes de
+  // deshacer el lateral para que la transformacion inversa sea realmente L.
+  if (!alinearRumboGyro(rumboMuseo)) return false;
   // Deshacer el desplazamiento lateral en zona despejada
   if (!desplazarLateral(-lateral)) return false;
   // Media vuelta (180°) para volver mirando hacia los slots del centro
   if (!girarIzquierdaGyro(GIRO_SALIDA_1, 22.0)) return false;
   if (!girarIzquierdaGyro(GIRO_SALIDA_2, 22.0)) return false;
   // Retornar al centro de la pista
-  if (!moverRectoGyro(RUTA_HASTA_MUSEO_GRADOS - 160, 62.0, 6.0)) return false;
+  long retorno = RUTA_HASTA_MUSEO_GRADOS -
+                 RETROCESO_DESPEJE_MUSEO_GRADOS -
+                 RETROCESO_NETO_DEPOSITO_GRADOS;
+  if (!moverRectoGyro(retorno, 62.0, 6.0)) return false;
+  if (rumboReferenciaValido &&
+      !alinearRumboGyro(rumboReferenciaSlots)) return false;
 
   return true;
 }
@@ -886,6 +954,14 @@ void imprimirMapaSlots() {
 bool procesarSlot(byte slot) {
   SERIAL_VISION.print("#visitando slot ");
   SERIAL_VISION.println(slot);
+
+  // Cada slot parte del mismo rumbo absoluto, no del error acumulado por el
+  // ciclo anterior.
+  if (rumboReferenciaValido &&
+      !alinearRumboGyro(rumboReferenciaSlots)) {
+    falloNavegacion = true;
+    return false;
+  }
 
   if (!irCentroASlot(slot)) {
     falloNavegacion = true;
@@ -982,6 +1058,10 @@ void loop() {
   unsigned long esperaPi = millis();
   while (!visionViva(1000) && millis() - esperaPi < 2200) _loop();
   if (!visionViva(1000)) logPi("AVISO: enlace de vision no confirmado");
+
+  giroscopio.update();
+  rumboReferenciaSlots = giroscopio.getAngleZ();
+  rumboReferenciaValido = true;
 
   // La unica busqueda global se hace aqui: robot inmovil, centrado y mirando
   // la fila original. Desde este punto cada slot se sigue por su color fijo.

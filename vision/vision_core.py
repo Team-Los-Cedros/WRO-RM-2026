@@ -615,6 +615,7 @@ class Detector:
         if reglas_extra:
             r.update(reglas_extra)
         area_min = r.get("area_min_px", self.area_min)
+        area_max = r.get("area_max_px")
         alto_min = r.get("alto_min_px", self.alto_min)
         aspecto_max = r.get("relacion_aspecto_max", self.aspecto_max)
         y_base_max = int(frame.shape[0] * r.get(
@@ -625,6 +626,8 @@ class Detector:
         for c in contornos:
             area = cv2.contourArea(c)
             if area < area_min:
+                continue
+            if area_max is not None and area > area_max:
                 continue
             x, y, w, h = cv2.boundingRect(c)
             if w == 0 or h < alto_min:
@@ -817,7 +820,16 @@ class Detector:
                                            0.20 * q_cuatro + 0.15 * q_centro)))
             candidatos.append(d)
 
-        candidatos.sort(key=lambda d: (d.confianza, -abs(d.ex), d.area), reverse=True)
+        if candidatos:
+            # El ruido cromatico puede formar cuadritos pequeños con buena
+            # forma y cercanos al centro. No deben ganar por confianza a un
+            # cuadro de destino mucho mayor que tambien paso todos los filtros.
+            area_mayor = max(d.area for d in candidatos)
+            fraccion = cfg.get("fraccion_area_maxima_min", 0.30)
+            candidatos = [d for d in candidatos
+                           if d.area >= area_mayor * fraccion]
+            candidatos.sort(
+                key=lambda d: (d.confianza, -abs(d.ex), d.area), reverse=True)
         return (candidatos[0] if candidatos else Deteccion()), mask, y0
 
     def distancia_mm(self, y_base):
