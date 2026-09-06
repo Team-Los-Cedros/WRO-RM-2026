@@ -941,53 +941,67 @@ void loop() {
   // ==========================================
 
 /* colores no aleatorios*/
-  girarDerechaGyro(85.0, 20.0);
+   girarDerechaGyro(85.0, 20.0);
   avanzarRectoGyro(200, 50, 1.5, 2.5);
   girarIzquierdaGyro(85.0, 20.0);
  
-  avanzarRectoGyro(750, 50, 1.5, 6.5);
+  avanzarRectoGyro(742, 50, 1.5, 6.5);
   recolectar(2);
   retroceder(400, 25, 4.5);
 
-  girarIzquierdaGyro(82.0, 35.0);
-  avanzarRectoGyro(1145, 145, 6.0, 4.5);
+  girarIzquierdaGyro(84.0, 35.0);
+  avanzarRectoGyro(1145, 125, 6.0, 4.5);
   _delay(1.0);
   avanzarRectoGyroLineaPerpendicular(730, 45, 10.0, 90, 4);
   _delay(0.5);
 
   // Estos dos giros de 90 se podrian unir en girarIzquierdaGyro(180.0, 50.0)
-  // si la pausa de en medio no te hace falta. Los dejo tal cual por si la necesitas.
-  girarIzquierdaGyro(172.0, 30.0);
-  subir_pala();
-
+  // si la pausa de en medio no te hace falta. Los dejo tal cual por si la necesitas. 
+  girarIzquierdaGyro(175.0, 30.0);
+  avanzarRectoGyro(200, 45, 6.0, 1.5);
+  recolectar(1);
+  //Separar el rojo
   retroceder(200, 25, 2.5);
   girarDerechaGyro(30.0, 40.0);
-  avanzar(366, 60, 3.5);
+  avanzar(366, 40, 3.5);
   recolectar(2);
   girarDerechaGyro(50.0, 40.0);
-
-  avanzar(510, 60, 3.5);
+  //Empujar a la zona
+  avanzar(810, 60, 4.0);
   recolectar(1);
-  avanzar(55, 60, 3.5);
-  retroceder(450, 25, 4.5);
+  avanzar(55, 85, 3.0);
+
+  /*Acomodar rojo
+  girarIzquierdaGyro(20.0, 20.0);
+  avanzar(55, 85, 3.0);
+  _delay(1.0);
+  retroceder(55, 85, 3.0);
+  girarDerechaGyro(20.0, 20.0);
+  */
+  retroceder(750, 80, 3.5);
 
   // ---- ESTE ERA EL GIRO QUE FALLABA (cruzaba el +-180) ----
- 
-  girarIzquierdaGyro(160.0, 50.0);
-  avanzar(250, 60, 1.5);
-  avanzar(700, 60, 3.5);
+  // Voltear hacia el verde
+  recolectar(2);
+  girarIzquierdaGyro(160.0, 32.0);
+  avanzar(505, 145, 3.5); 
+  //Acomodar el verde si queda fuera
+  girarIzquierdaGyro(30.0, 40.0);
+  avanzar(45, 60, 1.5);
+  retroceder(300, 75, 4.5);
+  recolectar(1);
+  //Girar hacia la línea
+  girarDerechaGyro(100.0, 30.0);
+  _delay(0.5);
+  avanzarRectoGyro(400, 210, 3.0, 4.5);
+  _delay(1.5);
+  avanzarRectoGyroLineaPerpendicular(1, 45, 10.0, 90, 4);
+  _delay(0.5);
+  girarIzquierdaGyro(85.0, 50.0);
 
-girarIzquierdaGyro(20.0, 50.0);
-retroceder(650, 25, 4.5);
-
-
- girarDerechaGyro(80.0, 50.0);
- avanzar(860, 60, 3.5);
- girarIzquierdaGyro(85.0, 50.0);
-
- avanzar(660, 60, 3.5);
+ avanzar(550, 60, 3.5);
  recolectar(2);
- retroceder(680, 25, 4.5);
+ retroceder(800, 25, 4.5);
 
  girarIzquierdaGyro(82.0, 30.0);
  avanzar(2500, 60, 6.5);
