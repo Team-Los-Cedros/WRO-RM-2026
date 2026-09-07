@@ -509,7 +509,8 @@ class Camara:
 
 class Deteccion:
     __slots__ = ("encontrado", "color", "cx", "cy", "y_base", "area",
-                 "w", "h", "dist_mm", "ex", "ey", "confianza")
+                 "w", "h", "dist_mm", "ex", "ey", "confianza",
+                 "asimetria", "vecino_izq", "vecino_der")
 
     def __init__(self):
         self.encontrado = False
@@ -524,6 +525,9 @@ class Deteccion:
         self.ex = 0
         self.ey = 0
         self.confianza = 0
+        self.asimetria = 0
+        self.vecino_izq = None
+        self.vecino_der = None
 
 
 def _rangos_a_arrays(rangos):
@@ -547,6 +551,7 @@ class Detector:
         self.zonas_ignoradas = det.get("zonas_ignoradas", [])
         self.fila_cfg = cfg.get("fila_artefactos", {})
         self.destino_cfg = cfg.get("destino", {})
+        self.ORDEN_DESTINO = ("ROJO", "VERDE", "NEGRO", "AZUL", "AMARILLO")
         self.reglas = {k: v for k, v in cfg.get("reglas_color", {}).items()
                        if not k.startswith("_")}
         k = det.get("kernel_morfologia", 3)
@@ -742,14 +747,9 @@ class Detector:
             grupos.sort(key=lambda d: d.cx)
         return grupos
 
-    def detectar_destino(self, frame, color):
-        """Detecta el cuadro plano del museo por color, forma y marco blanco."""
+    def _candidatos_cuadro_destino(self, hsv, y0, y1, color, ancho):
+        """Extrae contornos plausibles para un color de destino plano."""
         cfg = self.destino_cfg
-        alto, ancho = frame.shape[:2]
-        roi_y = cfg.get("roi_y", [0.04, 0.70])
-        y0 = max(0, int(alto * roi_y[0]))
-        y1 = min(alto, int(alto * roi_y[1]))
-        hsv = cv2.cvtColor(frame[y0:y1], cv2.COLOR_BGR2HSV)
         rangos_cfg = self.cfg.get("colores_destino", {}).get(color)
         rangos = _rangos_a_arrays(rangos_cfg) if rangos_cfg else self.rangos(color)
         mask = cv2.inRange(hsv, rangos[0][0], rangos[0][1])
@@ -774,9 +774,6 @@ class Detector:
             x, y, w, h = cv2.boundingRect(c)
             if w == 0 or h == 0:
                 continue
-            # El borde superior suele ser fondo lejano o pared.
-            # En el borde inferior, si el área es grande (objeto cercano al depositar),
-            # no lo descartamos para no perderlo al aproximar.
             if y <= 1:
                 continue
             if (y + h >= (y1 - y0) - 1) and area < area_min * 2.5:
@@ -825,17 +822,80 @@ class Detector:
                                            0.20 * q_cuatro + 0.15 * q_centro)))
             candidatos.append(d)
 
-        if candidatos:
-            # El ruido cromatico puede formar cuadritos pequeños con buena
-            # forma y cercanos al centro. No deben ganar por confianza a un
-            # cuadro de destino mucho mayor que tambien paso todos los filtros.
-            area_mayor = max(d.area for d in candidatos)
-            fraccion = cfg.get("fraccion_area_maxima_min", 0.30)
-            candidatos = [d for d in candidatos
-                           if d.area >= area_mayor * fraccion]
-            candidatos.sort(
-                key=lambda d: (d.confianza, -abs(d.ex), d.area), reverse=True)
-        return (candidatos[0] if candidatos else Deteccion()), mask, y0
+        return candidatos, mask
+
+    def detectar_destino(self, frame, color):
+        """Detecta el cuadro plano del museo por color, forma y marco blanco,
+        aprovechando los colores vecinos adyacentes para alineacion y simetria."""
+        cfg = self.destino_cfg
+        alto, ancho = frame.shape[:2]
+        roi_y = cfg.get("roi_y", [0.04, 0.70])
+        y0 = max(0, int(alto * roi_y[0]))
+        y1 = min(alto, int(alto * roi_y[1]))
+        hsv = cv2.cvtColor(frame[y0:y1], cv2.COLOR_BGR2HSV)
+
+        candidatos, mask = self._candidatos_cuadro_destino(hsv, y0, y1, color, ancho)
+        if not candidatos:
+            return Deteccion(), mask, y0
+
+        area_mayor = max(d.area for d in candidatos)
+        fraccion = cfg.get("fraccion_area_maxima_min", 0.30)
+        candidatos = [d for d in candidatos if d.area >= area_mayor * fraccion]
+
+        # Determinar vecinos en el orden oficial: ROJO, VERDE, NEGRO, AZUL, AMARILLO
+        color_izq, color_der = None, None
+        if color in self.ORDEN_DESTINO:
+            idx = self.ORDEN_DESTINO.index(color)
+            if idx > 0:
+                color_izq = self.ORDEN_DESTINO[idx - 1]
+            if idx < len(self.ORDEN_DESTINO) - 1:
+                color_der = self.ORDEN_DESTINO[idx + 1]
+
+        cands_izq = self._candidatos_cuadro_destino(hsv, y0, y1, color_izq, ancho)[0] if color_izq else []
+        cands_der = self._candidatos_cuadro_destino(hsv, y0, y1, color_der, ancho)[0] if color_der else []
+
+        for d in candidatos:
+            v_izq, v_der = None, None
+            # Vecino izquierdo compatible
+            if cands_izq:
+                izqs = [c for c in cands_izq if c.cx < d.cx and abs(c.cy - d.cy) <= max(18, int(0.40 * max(d.h, c.h)))]
+                if izqs:
+                    v_izq = max(izqs, key=lambda c: c.cx)
+
+            # Vecino derecho compatible
+            if cands_der:
+                ders = [c for c in cands_der if c.cx > d.cx and abs(c.cy - d.cy) <= max(18, int(0.40 * max(d.h, c.h)))]
+                if ders:
+                    v_der = min(ders, key=lambda c: c.cx)
+
+            d.vecino_izq = v_izq
+            d.vecino_der = v_der
+
+            if v_izq and v_der:
+                # Terna completa detectada
+                cx_esperado = (v_izq.cx + v_der.cx) / 2.0
+                d_izq = d.cx - v_izq.cx
+                d_der = v_der.cx - d.cx
+                d.asimetria = int(round(d_izq - d_der))
+                # Refinar cx con el centro medio de la terna para compensar sombras
+                cx_refinado = int(round(0.60 * d.cx + 0.40 * cx_esperado))
+                d.cx = cx_refinado
+                d.ex = d.cx - self.cx_garra
+                d.confianza = min(100, d.confianza + 25)
+            elif v_izq or v_der:
+                # Validacion unilateral (extremos de la fila o un vecino visible)
+                d.confianza = min(100, d.confianza + 12)
+
+        candidatos.sort(
+            key=lambda d: (
+                1 if (d.vecino_izq and d.vecino_der) else (0.5 if (d.vecino_izq or d.vecino_der) else 0),
+                d.confianza,
+                -abs(d.ex),
+                d.area
+            ),
+            reverse=True
+        )
+        return candidatos[0], mask, y0
 
     def distancia_mm(self, y_base):
         """Interpola la tabla de calibracion. Fuera de rango hace clamp."""
@@ -863,12 +923,31 @@ def dibujar_overlay(frame, det, color, fps, roi_y0, cx_garra):
     cv2.line(frame, (0, roi_y0), (ancho, roi_y0), (120, 120, 120), 1)
 
     if det.encontrado:
+        # Dibujar vecinos si existen (Modo DESTINO con guia de alineacion)
+        if det.vecino_izq is not None:
+            vi = det.vecino_izq
+            xi, yi = vi.cx - vi.w // 2, vi.y_base - vi.h
+            cv2.rectangle(frame, (xi, yi), (xi + vi.w, vi.y_base), (255, 200, 0), 1)
+            cv2.putText(frame, vi.color[:3], (xi, max(12, yi - 4)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.32, (255, 200, 0), 1, cv2.LINE_AA)
+            cv2.line(frame, (vi.cx, vi.cy), (det.cx, det.cy), (255, 200, 0), 1)
+
+        if det.vecino_der is not None:
+            vd = det.vecino_der
+            xd, yd = vd.cx - vd.w // 2, vd.y_base - vd.h
+            cv2.rectangle(frame, (xd, yd), (xd + vd.w, vd.y_base), (200, 0, 255), 1)
+            cv2.putText(frame, vd.color[:3], (xd, max(12, yd - 4)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.32, (200, 0, 255), 1, cv2.LINE_AA)
+            cv2.line(frame, (det.cx, det.cy), (vd.cx, vd.cy), (200, 0, 255), 1)
+
         x = det.cx - det.w // 2
         y = det.y_base - det.h
         cv2.rectangle(frame, (x, y), (x + det.w, det.y_base), (0, 255, 0), 2)
         cv2.circle(frame, (det.cx, det.y_base), 4, (0, 0, 255), -1)
         txt = "ex=%+d d=%dmm a=%d q=%d" % (
             det.ex, det.dist_mm, det.area, det.confianza)
+        if det.vecino_izq and det.vecino_der:
+            txt += " asim=%+d" % det.asimetria
     else:
         txt = "sin objeto"
 

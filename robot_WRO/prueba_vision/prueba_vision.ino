@@ -604,18 +604,18 @@ const int PALA_BARRER = 117;         // Modo barrido frontal para empujar al mus
 void abrirGarra() {
   servoGarra1.write(GARRA_ABIERTA_S1);
   servoGarra2.write(GARRA_ABIERTA_S2);
-  _delay(0.75);
+  _delay(0.45);
 }
 
 void cerrarGarra() {
   servoGarra1.write(GARRA_CERRADA_S1);
   servoGarra2.write(GARRA_CERRADA_S2);
-  _delay(0.75);
+  _delay(0.45);
 }
 
 void bajarPala() {
   miServo.write(PALA_BAJAR);
-  _delay(0.75);
+  _delay(0.45);
 }
 
 void bajar_pala() {
@@ -626,18 +626,18 @@ void recolectar(int modo) {
   if (modo == 1) miServo.write(PALA_MODO_1);
   else if (modo == 2) miServo.write(PALA_ASENTAR);
   else miServo.write(PALA_RECOGER);
-  _delay(0.75);
+  _delay(0.45);
 }
 
 void posicionar() {
   miServo.write(PALA_POSICIONAR);
-  _delay(0.75);
+  _delay(0.45);
 }
 
 void barrer() {
   abrirGarra();
   miServo.write(PALA_BARRER);
-  _delay(0.75);
+  _delay(0.45);
 }
 
 // =========================================================================
@@ -835,7 +835,13 @@ const byte NUM_ARTEFACTOS_OBJETIVO = 4;
 const unsigned long LIMITE_RUTINA_MS = 116000UL;
 const unsigned long RESERVA_NUEVO_CICLO_MS = 26000UL;
 
+// En modo de prueba (true), no aborta la rutina a los 90s permitiendo
+// probar y calibrar los 4 slots completos (incluyendo slots extremos 0 y 3).
+// En competencia oficial cambiar a false para respetar el tiempo reglamentario.
+const bool MODO_PRUEBA_SIN_TIMEOUT = true;
+
 bool quedaTiempo(unsigned long reservaMs) {
+  if (MODO_PRUEBA_SIN_TIMEOUT) return true;
   return millis() - inicioRutinaMs + reservaMs < LIMITE_RUTINA_MS;
 }
 
@@ -872,12 +878,12 @@ long offsetDestino(ColorObjeto color) {
 // Secuencia probada de deposito
 void depositarConRutinaProbada() {
   recolectar(2);             // 120°: presiona hacia abajo para asentar
-  retroceder(23, 26, 1.0);   // Despega de la cuña interna
+  retroceder(23, 26, 0.75);  // Despega de la cuña interna
   recolectar(3);             // 111°: sube pala para que paletas abran sin rozar suelo
   abrirGarra();              // Abre paletas
   barrer();                  // 117°: pala en modo empuje frontal
-  avanzar(68, 36, 0.75);     // Empuja artefacto al expositor
-  retroceder(90, 28, 1.0);   // Retrocede suave para no arrastrarlo
+  avanzar(68, 36, 0.65);     // Empuja artefacto al expositor
+  retroceder(90, 28, 0.75);  // Retrocede suave para no arrastrarlo
   recolectar(3);             // Sube pala
 }
 
@@ -899,28 +905,39 @@ bool irSlotAMuseoYDepositar(byte slot, ColorObjeto color) {
   visionPedirDestino(color);
   _delay(0.20);
 
-  // Avance inicial hacia el museo (~340 grados) mientras la cámara enfoca el cuadro desde lejos
-  if (!moverRectoGyro(340, 60.0, 4.0)) return false;
+  // Avance inicial hacia el museo (~320 grados)
+  if (!moverRectoGyro(320, 60.0, 4.0)) return false;
+  if (!alinearRumboGyro(rumboMuseo, 2.0)) return false;
 
-  // Si ya detecta el cuadro de destino, centrar rumbo temprano
-  if (visionVeObjeto(300)) {
-    visionCentrar(1.2);
-  }
-
-  // Completar avance restante hacia la posición de depósito
-  if (!moverRectoGyro(RUTA_HASTA_MUSEO_GRADOS - 340, 50.0, 4.0)) return false;
-
-  // Corrección final frente al expositor
-  bool destinoVisible = visionVeObjeto(600);
-  if (!destinoVisible) {
-    destinoVisible = visionBuscar(18.0, 16.0);
-  }
-  if (destinoVisible) {
-    if (!visionCentrar(VIS_TIMEOUT_CENTRADO_DESTINO)) {
-      logPi("destino visible pero no centro estable");
+  // Si detecta el cuadro de destino (y sus vecinos), corregir desfase lateralmente conservando ortogonalidad
+  _delay(0.15);
+  if (visionVeObjeto(500)) {
+    if (abs(vision.ex) > 12) {
+      long corrLateral = constrain((long)(vision.ex * 0.90), -85, 85);
+      logPi("correccion lateral ortogonal anticipada");
+      if (desplazarLateral(corrLateral)) {
+        lateral += corrLateral;
+      }
+      alinearRumboGyro(rumboMuseo, 1.8);
     }
-  } else {
-    logPi("destino no visible; usando llegada odometrica");
+  }
+
+  // Completar avance restante hacia la posición de depósito manteniendo rumbo ortogonal
+  if (!alinearRumboGyro(rumboMuseo, 1.8)) return false;
+  if (!moverRectoGyro(RUTA_HASTA_MUSEO_GRADOS - 320, 48.0, 4.0)) return false;
+
+  // Verificación final frente al expositor: asegurar rumbo perpendicular exacto
+  if (!alinearRumboGyro(rumboMuseo, 1.5)) return false;
+  _delay(0.15);
+  if (visionVeObjeto(450)) {
+    if (abs(vision.ex) > 14) {
+      long corrFinal = constrain((long)(vision.ex * 0.70), -50, 50);
+      logPi("micro-ajuste lateral final");
+      if (desplazarLateral(corrFinal)) {
+        lateral += corrFinal;
+      }
+      alinearRumboGyro(rumboMuseo, 1.5);
+    }
   }
 
   // 5. Depositar el artefacto con la rutina precisa
@@ -929,11 +946,11 @@ bool irSlotAMuseoYDepositar(byte slot, ColorObjeto color) {
 
   // 6. Retorno seguro:
   // Retroceso corto para despejar el expositor
-  retroceder(RETROCESO_DESPEJE_MUSEO_GRADOS, 45, 1.5);
-  // visionCentrar modifica el rumbo. Se recupera el eje del museo antes de
-  // deshacer el lateral para que la transformacion inversa sea realmente L.
+  retroceder(RETROCESO_DESPEJE_MUSEO_GRADOS, 45, 1.2);
+  // Se recupera el eje del museo antes de deshacer el lateral para que la
+  // transformacion inversa sea realmente L ortogonal.
   if (!alinearRumboGyro(rumboMuseo)) return false;
-  // Deshacer el desplazamiento lateral en zona despejada
+  // Deshacer el desplazamiento lateral total acumulado en zona despejada
   if (!desplazarLateral(-lateral)) return false;
   // Media vuelta (180°) para volver mirando hacia los slots del centro
   if (!girarIzquierdaGyro(GIRO_SALIDA_1, 22.0)) return false;
@@ -1075,7 +1092,7 @@ void loop() {
 
   // La unica busqueda global se hace aqui: robot inmovil, centrado y mirando
   // la fila original. Desde este punto cada slot se sigue por su color fijo.
-  if (visionEscanearFila(2.4)) {
+  if (visionEscanearFila(3.5)) {
     logPi("mapa inicial de cuatro slots confirmado");
     imprimirMapaSlots();
   } else {

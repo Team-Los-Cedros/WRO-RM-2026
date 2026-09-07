@@ -154,6 +154,34 @@ class DetectorTest(unittest.TestCase):
 
         self.assertFalse(det.encontrado)
 
+    def test_destino_alineacion_con_vecinos(self):
+        # Simular expositores de museo: VERDE (izq), NEGRO (centro), AZUL (der)
+        frame = np.full((self.alto, self.ancho, 3), 80, dtype=np.uint8)
+        y0, y1 = 110, 170
+
+        # VERDE (izquierda)
+        cv2.rectangle(frame, (140, 85), (230, 195), (245, 245, 245), -1)
+        cv2.rectangle(frame, (150, y0), (220, y1), (0, 180, 0), -1)
+
+        # NEGRO (centro)
+        cv2.rectangle(frame, (275, 85), (365, 195), (245, 245, 245), -1)
+        cv2.rectangle(frame, (285, y0), (355, y1), (15, 15, 15), -1)
+
+        # AZUL (derecha)
+        cv2.rectangle(frame, (410, 85), (500, 195), (245, 245, 245), -1)
+        cv2.rectangle(frame, (420, y0), (490, y1), (200, 70, 20), -1)
+
+        det, _, _ = self.detector.detectar_destino(frame, "NEGRO")
+
+        self.assertTrue(det.encontrado)
+        self.assertEqual(det.color, "NEGRO")
+        self.assertIsNotNone(det.vecino_izq)
+        self.assertEqual(det.vecino_izq.color, "VERDE")
+        self.assertIsNotNone(det.vecino_der)
+        self.assertEqual(det.vecino_der.color, "AZUL")
+        self.assertLessEqual(abs(det.asimetria), 10)
+        self.assertGreaterEqual(det.confianza, 80)
+
 
 if __name__ == "__main__":
     unittest.main()
