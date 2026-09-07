@@ -1010,27 +1010,27 @@ void loop() {
   avanzarRectoGyroLineaPerpendicular(390, 35, 10.0, 40, 2, 30, 2, 0);
 
   //Ir a la AMARILLA
-  avanzar(324, 80, 2.6);
-  girarDerechaGyro(86.5, 30.0);
+  avanzar(315, 78, 2.6);
+  girarDerechaGyro(89.5, 30.0);
   _delay(0.5);
-  avanzar(120, 155, 1.0);
-  avanzarRectoGyroLineaPerpendicular(120, 25, 8.5, 25, 2, 10, 2, 15);
-  retroceder(200, 25, 1.8);
+  /*avanzar(95, 155, 1.0);
+  avanzarRectoGyroLineaPerpendicular(120, 25, 8.5, 30, 2, 10, 2, 15);
+  retroceder(200, 25, 1.8)*/
   //Recolectar
   bajar_pala();
-  avanzar(70, 25, 1.0);
+  avanzar(230, 30, 3.5);
   cerrarGarra();
-  retroceder(120, 25, 1.8);
-  abrirGarra();
-  avanzar(90, 55, 1.0);
-  cerrarGarra();
+  retroceder(110, 15, 2.8);
+ /* abrirGarra();
+  avanzar(100, 65, 1.0);
+  cerrarGarra();*/
   //Ir a llevar la torre
-  retroceder(41, 35, 1.5);
-  girarDerechaGyro(87.5, 30.0);
+  retroceder(31, 35, 1.5);
+  girarDerechaGyro(88.0, 30.0);
   recolectar(1);
-  avanzarRectoGyro(2080, 227, 21.5, 7.5);
+  avanzarRectoGyro(2027, 227, 22.5, 7.5);
   depositar();
-  retroceder(360, 25, 43.8);
+  retroceder(180, 25, 3.8);
   /*
   girarIzquierdaGyro(85.0, 50.0);
 
