@@ -858,6 +858,8 @@ void recolectar(int modo) {
     miServo.write(63);
   } else if (modo == 2) {
     miServo.write(120);
+  } else if (modo == 3) {
+    miServo.write(111);
   }
   _delay(1.0);
 }
@@ -969,7 +971,7 @@ void loop() {
   //Empujar a la zona
   avanzar(810, 60, 4.0);
   recolectar(1);
-  avanzar(55, 85, 3.0);
+  avanzar(55, 90, 1.85);
 
   /*Acomodar rojo
   girarIzquierdaGyro(20.0, 20.0);
@@ -982,37 +984,41 @@ void loop() {
 
   // ---- ESTE ERA EL GIRO QUE FALLABA (cruzaba el +-180) ----
   // Voltear hacia el verde
-  recolectar(2);
+  recolectar(3);
   girarIzquierdaGyro(160.0, 32.0);
   avanzar(505, 145, 3.5); 
   //Acomodar el verde si queda fuera
+  servoGarra2.write(GARRA_CERRADA_S2);
   girarIzquierdaGyro(30.0, 40.0);
+  abrirGarra();
   avanzar(45, 60, 1.5);
-  retroceder(300, 75, 4.5);
-  recolectar(1);
   //Girar hacia la línea
-  girarDerechaGyro(100.0, 30.0);
+  retroceder(300, 75, 3.5);
+  recolectar(1);
+  girarDerechaGyro(95.0, 30.0);
   _delay(0.5);
-  avanzarRectoGyro(400, 210, 3.0, 4.5);
+  //Ir por los otros 
+  avanzarRectoGyro(300, 225, 3.0, 4.5);
   _delay(1.5);
-  avanzarRectoGyroLineaPerpendicular(1, 45, 10.0, 90, 4);
+  avanzarRectoGyroLineaPerpendicular(100, 45, 10.0, 90, 4);
   _delay(0.5);
   girarIzquierdaGyro(85.0, 50.0);
 
- avanzar(550, 60, 3.5);
- recolectar(2);
- retroceder(800, 25, 4.5);
-
- girarIzquierdaGyro(82.0, 30.0);
- avanzar(2500, 60, 6.5);
+  //Recolectar el azul y negro
+  avanzar(460, 60, 3.5);
+  recolectar(2);
+  retroceder(860, 75, 6.5);
+ //Ir hacia las zonas del final
+ girarIzquierdaGyro(77.0, 30.0);
+ avanzar(2500, 245, 6.5);
  recolectar(1);
-
+ //Separa el negro
  retroceder(200, 25, 4.5);
  girarIzquierdaGyro(25.0, 50.0);
  avanzar(300, 60, 3.5);
 
  recolectar(2);
- parabrisas(700);
+ parabrisas(550);
 
   // Bucle infinito para que no repita la rutina en la competencia
   while(1) {
