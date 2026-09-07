@@ -542,18 +542,7 @@ void centrarLineaPerpendicular(float velocidadCentrado,
   _delay(0.1);
 }
 
-/**
- * Avanza recto manteniendo el rumbo con giroscopio hasta detectar
- * una línea negra perpendicular. Luego centra el robot sobre la línea.
- *
- * @param gradosMaximos Límite máximo de avance por encoder, por seguridad.
- * @param velocidadBase Velocidad base de avance.
- * @param gradosMinimosBusqueda Grados que debe avanzar antes de buscar línea.
- * @param timeoutSeg Tiempo máximo de avance.
- * @param Kp Ganancia de corrección de rumbo gyro.
- * @param velocidadCentrado Velocidad para el centrado final.
- * @param timeoutCentrado Tiempo máximo del centrado final.
- */
+
 long posAvanceRelativo(long izq0, long der0) {
   return ((Encoder_1.getCurPos() - izq0) - (Encoder_2.getCurPos() - der0)) / 2;
 }
@@ -567,6 +556,19 @@ void aplicarRectoGyro(float vel, float Kp, float &desvio, float &angPrev) {
   Encoder_1.runSpeed(vel - corr);
   Encoder_2.runSpeed(-(vel + corr));
 }
+
+/**
+ * Avanza recto manteniendo el rumbo con giroscopio hasta detectar
+ * una línea negra perpendicular. Luego centra el robot sobre la línea.
+ *
+ * @param gradosMaximos Límite máximo de avance por encoder, por seguridad.
+ * @param velocidadBase Velocidad base de avance.
+ * @param gradosMinimosBusqueda Grados que debe avanzar antes de buscar línea.
+ * @param timeoutSeg Tiempo máximo de avance.
+ * @param Kp Ganancia de corrección de rumbo gyro.
+ * @param velocidadCentrado Velocidad para el centrado final.
+ * @param timeoutCentrado Tiempo máximo del centrado final.
+ */
 
 void avanzarRectoGyroLineaPerpendicular(long gradosMaximos,
                                         float velocidadBase,
@@ -853,9 +855,10 @@ void barrer() {
 }
 
 // Subir el servo para llevar el objeto
+const int anguloTransportar = 63;
 void recolectar(int modo) {
   if (modo == 1) {
-    miServo.write(63);
+    miServo.write(anguloTransportar);
   } else if (modo == 2) {
     miServo.write(120);
   } else if (modo == 3) {
@@ -865,14 +868,20 @@ void recolectar(int modo) {
 }
 
 void posicionar() {
-  miServo.write(50);
+  miServo.write(70);
   _delay(1.0);
+  abrirGarra();
 }
 
 // Bajar el servo para soltar el objeto
+const int anguloDepositar =70;
 void depositar() {
-  miServo.write(40);
-  _delay(1.0);
+  for (int angulo = anguloTransportar; angulo <= anguloDepositar; angulo++) {
+    miServo.write(angulo);
+    _delay(0.50); // Ajusta este tiempo para cambiar la velocidad
+  }
+  //miServo.write(66);
+  _delay(0.5);
   abrirGarra();
 }
 
@@ -942,9 +951,9 @@ void loop() {
   // TU RUTINA DE MOVIMIENTO (sin cambios)
   // ==========================================
 
-/* colores no aleatorios*/
-   girarDerechaGyro(85.0, 20.0);
-  avanzarRectoGyro(200, 50, 1.5, 2.5);
+/* --- colores no aleatorios ---*/
+  girarDerechaGyro(85.0, 20.0);
+  avanzarRectoGyro(202, 50, 1.5, 2.5);
   girarIzquierdaGyro(85.0, 20.0);
  
   avanzarRectoGyro(742, 50, 1.5, 6.5);
@@ -952,7 +961,7 @@ void loop() {
   retroceder(400, 25, 4.5);
 
   girarIzquierdaGyro(84.0, 35.0);
-  avanzarRectoGyro(1145, 125, 6.0, 4.5);
+  avanzarRectoGyro(1105, 165, 6.0, 4.5);
   _delay(1.0);
   avanzarRectoGyroLineaPerpendicular(730, 45, 10.0, 90, 4);
   _delay(0.5);
@@ -960,7 +969,7 @@ void loop() {
   // Estos dos giros de 90 se podrian unir en girarIzquierdaGyro(180.0, 50.0)
   // si la pausa de en medio no te hace falta. Los dejo tal cual por si la necesitas. 
   girarIzquierdaGyro(175.0, 30.0);
-  avanzarRectoGyro(200, 45, 6.0, 1.5);
+  avanzarRectoGyro(225, 45, 6.0, 1.5);
   recolectar(1);
   //Separar el rojo
   retroceder(200, 25, 2.5);
@@ -969,39 +978,60 @@ void loop() {
   recolectar(2);
   girarDerechaGyro(50.0, 40.0);
   //Empujar a la zona
-  avanzar(810, 60, 4.0);
+  avanzar(810, 125, 3.0);
   recolectar(1);
   avanzar(55, 90, 1.85);
 
-  /*Acomodar rojo
-  girarIzquierdaGyro(20.0, 20.0);
-  avanzar(55, 85, 3.0);
-  _delay(1.0);
-  retroceder(55, 85, 3.0);
-  girarDerechaGyro(20.0, 20.0);
-  */
-  retroceder(750, 80, 3.5);
+  retroceder(750, 85, 3.5);
 
   // ---- ESTE ERA EL GIRO QUE FALLABA (cruzaba el +-180) ----
   // Voltear hacia el verde
-  recolectar(3);
+  recolectar(2);
   girarIzquierdaGyro(160.0, 32.0);
-  avanzar(505, 145, 3.5); 
+  avanzar(505, 145, 2.85); 
   //Acomodar el verde si queda fuera
+  recolectar(3);
   servoGarra2.write(GARRA_CERRADA_S2);
   girarIzquierdaGyro(30.0, 40.0);
   abrirGarra();
   avanzar(45, 60, 1.5);
-  //Girar hacia la línea
-  retroceder(300, 75, 3.5);
+  
+
+  //---TORRES AMARILLAS---
+
+  //Retroceder y Girar hacia la línea
+  retroceder(100, 65, 1.5);
+  retroceder(900, 220, 2.5);
+  girarDerechaGyro(99.0, 30.0);
   recolectar(1);
-  girarDerechaGyro(95.0, 30.0);
+  //Ir y centrar en linea 
+  avanzarRectoGyro(183, 195, 3.5, 2.5);
   _delay(0.5);
-  //Ir por los otros 
-  avanzarRectoGyro(300, 225, 3.0, 4.5);
-  _delay(1.5);
-  avanzarRectoGyroLineaPerpendicular(100, 45, 10.0, 90, 4);
+  avanzarRectoGyroLineaPerpendicular(390, 35, 10.0, 40, 2, 30, 2, 0);
+
+  //Ir a la AMARILLA
+  avanzar(324, 80, 2.6);
+  girarDerechaGyro(86.5, 30.0);
   _delay(0.5);
+  avanzar(120, 155, 1.0);
+  avanzarRectoGyroLineaPerpendicular(120, 25, 8.5, 25, 2, 10, 2, 15);
+  retroceder(200, 25, 1.8);
+  //Recolectar
+  bajar_pala();
+  avanzar(70, 25, 1.0);
+  cerrarGarra();
+  retroceder(120, 25, 1.8);
+  abrirGarra();
+  avanzar(90, 55, 1.0);
+  cerrarGarra();
+  //Ir a llevar la torre
+  retroceder(41, 35, 1.5);
+  girarDerechaGyro(87.5, 30.0);
+  recolectar(1);
+  avanzarRectoGyro(2080, 227, 21.5, 7.5);
+  depositar();
+  retroceder(360, 25, 43.8);
+  /*
   girarIzquierdaGyro(85.0, 50.0);
 
   //Recolectar el azul y negro
@@ -1020,6 +1050,8 @@ void loop() {
  recolectar(2);
  parabrisas(550);
 
+*/
+  detener(1.0);
   // Bucle infinito para que no repita la rutina en la competencia
   while(1) {
     _loop();
