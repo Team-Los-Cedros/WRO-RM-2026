@@ -1064,8 +1064,11 @@ class Detector:
         for r in rangos_w:
             mask_w |= cv2.inRange(hsv_roi, np.array(r[0:3], dtype=np.uint8), np.array(r[3:6], dtype=np.uint8))
 
-        # Anular zonas ignoradas
-        for zona in self.zonas_ignoradas:
+        # Anular zonas ignoradas: los dedos de la garra y, ademas, la torre que
+        # el robot lleva en la garra (torres.destino.zonas_ignoradas). Sin esto el
+        # cuerpo amarillo de la torre cargada compite con la base de destino.
+        zonas = list(self.zonas_ignoradas) + list(dest_cfg.get("zonas_ignoradas", []))
+        for zona in zonas:
             if len(zona) == 4:
                 zx0 = max(0, min(ancho, int(float(zona[0]) * ancho)))
                 zx1 = max(0, min(ancho, int(float(zona[2]) * ancho)))

@@ -149,7 +149,7 @@
   },
 
   "torres": {
-    "_comentario": "Configuracion independiente para las torres (recoleccion y destino) de WRO 2026",
+    "_comentario": "Torres amarillas WRO 2026. TORRE_REC busca la parte superior (cuerpo amarillo + corona blanca); TORRE_DEST busca la base (cuerpo amarillo + tapa negra). cx_garra: columna donde queda el centro de la garra. tabla_distancia: pares [ey, GRADOS DE ENCODER que faltan hasta el punto de agarre o de colocacion], medidos con MODO_CALIBRAR_VISION de prueba_wwl6_opt.ino. Los valores de abajo son de ejemplo: el robot no los usa mientras VIS_USAR_DISTANCIA = 0.",
     "cx_garra": 320,
     "ex_tolerancia_px": 10,
     "recolectar": {
@@ -169,6 +169,8 @@
     "destino": {
       "amarillo": [[18, 205, 25, 29, 255, 255]],
       "negro_cabeza": [[0, 0, 0, 179, 255, 60]],
+      "zonas_ignoradas": [[0.24, 0.44, 0.76, 1.00]],
+      "_nota_zonas": "Tapa la torre que el robot lleva en la garra con la pala a 95 grados (PALA_VER_DESTINO en prueba_wwl6_opt.ino). Medido en Prueba_3. Si cambias ese angulo, vuelve a medirla.",
       "roi_y": [0.05, 0.90],
       "area_min_px": 250,
       "relacion_aspecto_max": 3.0,
