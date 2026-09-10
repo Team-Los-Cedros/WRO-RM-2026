@@ -237,67 +237,211 @@ una décima, y el robot nunca encadena una orden nueva estando aún en marcha.
 | | Flash | RAM |
 |---|---|---|
 | Original | 27 592 B (11 %) | 1 594 B (19,5 %) |
-| Optimizado | 28 224 B (11 %) | 1 444 B (17,6 %) |
+| Optimizado | 28 814 B (11,3 %) | 1 444 B (17,6 %) |
 
 ---
 
-## 5. Puesta a punto (una sola sesión)
 
-### Paso 1 — `calibrar_gyro.ino`
+## 5. Resultados de la calibración del 09/09/2026
 
-Súbelo, abre el Monitor Serie a **115200** y escribe letras:
+### Lo que salió bien
 
-| Tecla | Qué mide | Qué haces con el resultado |
+| Prueba | Resultado | Veredicto |
 |---|---|---|
-| `s` | Errores del bus I2C y µs por lectura | Si hay errores > 0, baja `I2C_HZ` a `200000` |
-| `b` | Sesgo y deriva del giroscopio | Deriva > 3 °/min → el MPU está mal alimentado o muy caliente |
-| `e` | Escala del giroscopio (giras el robot 360° a mano) | → `GYRO_ESCALA` |
-| `v` | rpm de cada motor a PWM 255 | → `RPM_MAX` (y ves si siguen descompensados) |
-| `m` | PWM mínimo de arranque | → `GIRO_PWM_MIN` y `RECTO_PWM_MIN` |
-| `t` | 5 giros de 90° seguidos | Comprobación: deberían salir todos dentro de ±1° |
+| Bus I2C | 2 496 lecturas en 5 s, **0 errores**, 209 µs/lectura | Perfecto. 400 kHz se queda. Las 2 496 lecturas en 5 s son exactamente las 500 Hz de diseño. |
+| Sesgo del giroscopio | −106,66 LSB (= −1,63 °/s) | Normal para un MPU6050. |
+| Ruido | 0,34 °/s pico a pico | Muy bajo. Módulo sano. |
+| Deriva | 0,05 °/min | Excelente. En una ronda de 2 minutos son 0,1° de error. |
+| Velocidad máxima | izq 168,7 rpm, der 158,3 rpm | `RPM_MAX = 158`. La diferencia del 6,2 % se compensa con `TRIM_MOTOR_IZQ`. |
+| PWM mínimo | giro 39, recto 43 | Aplicados tal cual. |
+| 5 giros de 90° | 91,49 / 91,51 / 91,61 / 91,41 / 91,30 | **Dispersión de 0,31°** (σ ≈ 0,12°). El lazo cerrado funciona. |
 
-Para `e`, gira **3 vueltas completas (1080°)** en vez de una: el error de lectura del
-suelo se reparte entre tres y sale mucho más fino.
+Sobre los 5 giros: los ~1,45° de más **no** son un fallo. La prueba `t` del calibrador
+no llevaba la fase de corrección, así que ese 1,45° es la pasada del frenado en crudo.
+Lo importante es que es **repetible a ±0,16°**: eso es justo lo que la fase de corrección
+del sketch necesita para dejarla por debajo de 0,8°. (La prueba `t` ya se actualizó para
+usar el mismo lazo cerrado que la rutina, así que a partir de ahora los números que
+imprime son los reales.)
 
-### Paso 2 — pasar los valores a `prueba_wwl5_opt.ino`
+### La medida de escala NO es válida
 
-Están todos juntos en el bloque `1. CONFIGURACIÓN` de arriba del sketch.
+| Intento | Giro físico | Midió | Escala implícita |
+|---|---|---|---|
+| 14:20 | 360° | −467,65° | 0,7698 |
+| 14:30 | 1080° | 724,41° | 1,4909 |
 
-### Paso 3 — corregir los ángulos de la rutina
+Las dos se contradicen: la primera dice que el sensor lee un 30 % de más, la segunda que
+lee un 33 % de menos. **Un factor de escala no puede ser las dos cosas**, así que la que
+falla es la medición, no el sensor.
 
-**Esto es obligatorio.** Los ángulos que hay en la rutina llevaban descontada la pasada del
-frenado. Ahora el robot gira lo que le pides, así que hay que poner los valores reales:
+El motivo: **el giroscopio integra rotación sobre su propio eje Z, no rumbo sobre el
+suelo.** Mientras el robot esté plano las dos cosas coinciden, pero en cuanto lo levantas
+o lo inclinas dejan de coincidir, y las rotaciones en 3D no se suman como números: puedes
+volver al mismo sitio con un integral de Z que no es cero. Los tiempos lo confirman:
+**68 s** para una vuelta y **87 s** para tres. Eso no es deslizar el robot por el suelo,
+es manipularlo en el aire.
 
-| Antes | Casi seguro debería ser |
-|---|---|
-| `girarDerechaGyro(85.0, 20.0)` | `90.0` |
-| `girarIzquierdaGyro(85.0, 20.0)` | `90.0` |
-| `girarIzquierdaGyro(84.0, 35.0)` | `90.0` |
-| `girarIzquierdaGyro(175.0, 30.0)` | `180.0` |
-| `girarDerechaGyro(89.5, 30.0)` | `90.0` |
-| `girarDerechaGyro(87.0, 30.0)` | `90.0` |
-| `girarDerechaGyro(99.0, 30.0)` + `girarDerechaGyro(5.0, 15.0)` | probablemente un solo `104.0`, o `90.0` si esos 14° extra eran para compensar |
+**No metí ninguno de esos dos valores en el código.** Cualquiera de los dos arruinaría
+todos los giros. `GYRO_ESCALA` se queda en **1.000**.
 
-Los que no son múltiplos de 45 (30, 50, 25, 75, 35, 160) solo los sabes tú: mira en la
-pista cuánto gira de más ahora y réstaselo.
+Añadí la opción **`a`** a `calibrar_gyro.ino`: el robot da 3 vueltas completas él solo,
+apoyado en el suelo, y tú solo mides con un transportador cuánto se desvió de la marca.
+El eje Z se mantiene vertical todo el rato, así que la medida sí vale.
 
-Se han dejado tal cual a propósito, para no adivinar tu intención y romperte la rutina.
-
-### Paso 4 — subir la velocidad
-
-Ahora sí puedes. El ángulo final ya no depende de la velocidad de crucero. Sube los
-valores de velocidad de los giros hasta que la mecánica empiece a patinar (si las ruedas
-patinan el giroscopio sigue midiendo bien, pero el robot se desplaza además de girar).
-
-Con `DEPURAR 1` cada giro y cada avance imprimen por Serial lo pedido, lo real y los
-milisegundos que tardaron. Es la forma rápida de ver dónde se va el tiempo.
+**Comprobación rápida sin transportador:** corre la prueba `t`. Cinco giros de 90° son
+450° = una vuelta completa + 90°. Si al terminar el robot queda a un cuarto de vuelta de
+la marca inicial, la escala está cerca de 1 y puedes dejarla como está.
 
 ---
 
-## 6. Hardware — vale la pena revisarlo
+## 6. Por qué "a veces giraba y a veces no"
+
+Era un fallo real de la primera versión, y con las velocidades que traía la rutina saltaba
+casi seguro. Dos causas encadenadas:
+
+### 6.1 El PWM se quedaba clavado en el mínimo
+
+`girarDerechaGyro(85.0, 20.0)` con `RPM_MAX = 185` daba:
+
+```
+pwmDesdeRpm(20) = 20 x 255/185 = 27
+pwmCrucero = max(27, GIRO_PWM_MIN=45) = 45
+```
+
+Y dentro del bucle:
+
+```c
+p = constrain(p, GIRO_PWM_MIN, pwmCrucero);   // = constrain(p, 45, 45) = 45 SIEMPRE
+```
+
+O sea que todos los giros lentos salían a PWM 45 fijo, justo encima del umbral medido (39).
+Con la batería algo baja, una rueda más sucia o un poco más de roce, **no arrancaba**.
+
+Y lo peor estaba en la fase de corrección:
+
+```c
+if (p < pwmCrucero) p += 3;    // pwmCrucero == 45 == p  ->  no sube nunca
+```
+
+El mecanismo que existía justo para desatascar al robot **estaba capado al mismo valor que
+ya había fallado**. Si se quedaba pegado, se quedaba pegado los 600 ms enteros, tres veces.
+
+### 6.2 El tiempo límite era demasiado corto para giros lentos y grandes
+
+`girarIzquierdaGyro(175.0, 30.0)` a PWM 45 gira a unos 40 °/s → 175° son **4,4 segundos**,
+contra un límite por defecto de **3 s**. El giro se cortaba a medias, y como `porTimeout`
+saltaba, **la fase de corrección ni se ejecutaba**.
+
+### Lo que se cambió
+
+- **Anti-atasco de verdad**: si el robot lleva más de 120 ms sin avanzar, el PWM sube +1
+  cada 12 ms hasta `GIRO_PWM_ANTIATASCO` (120), **por encima de la velocidad de crucero**.
+  En cuanto se mueve, vuelve a la rampa normal. Solo actúa lejos del objetivo, para no
+  estropear el frenado.
+- **Detector de progreso en vez de reloj**: ya no se aborta por tiempo, se aborta porque
+  el robot lleva 1,5 s sin ganar ni medio grado. Un giro lento pero que avanza no se corta
+  nunca; uno bloqueado contra un obstáculo se corta enseguida y lo dice por Serial
+  (`<<< ATASCADO`). El tiempo límite pasa a 6 s y es solo una red de seguridad.
+- Lo mismo en `moverRecto()`.
+- **Velocidades subidas** (ver abajo), que era la causa de fondo.
+
+---
+
+## 7. Velocidades: mínimos y máximos
+
+Con `RPM_MAX = 158`, la conversión es **PWM = rpm × 1,61**.
+
+| rpm | PWM | Qué es |
+|---|---|---|
+| 24 | 39 | mínimo absoluto para **girar** |
+| 27 | 43 | mínimo absoluto para **avanzar** |
+| **35** | 56 | **mínimo recomendado** — arranca siempre, con o sin carga |
+| 50 | 81 | ajustes de pocos grados, giros con carga delicada |
+| 90 | 145 | uso general |
+| **120** | 194 | **probado**: 5 giros de 90° con ±0,16° |
+| 150 | 242 | tramos rectos largos |
+| 158 | 255 | tope. Por encima de 158 no pasa nada, se satura |
+
+Por debajo del mínimo el código sube el PWM al suelo automáticamente, así que no se rompe
+nada — pero pedir 20 rpm y pedir 24 dan exactamente lo mismo. **Poner velocidades por
+debajo de 35 ya no sirve para nada**: la precisión la da el lazo cerrado, no la lentitud.
+
+Constantes definidas en el sketch:
+
+```c
+#define V_GIRO_FINO      50.0f   // ajustes pequeños, giros con carga delicada
+#define V_GIRO           90.0f   // giro normal
+#define V_GIRO_RAPIDO   120.0f   // giros grandes (90, 160, 180)
+
+#define V_APROX          35.0f   // acercarse a un objeto sin tumbarlo
+#define V_RECTO_MEDIO    60.0f   // tramos cortos, búsqueda de línea
+#define V_RECTO          90.0f   // uso general
+#define V_RECTO_RAPIDO  150.0f   // tramos largos
+```
+
+**Todos los giros se subieron.** Antes iban a 15–50 rpm porque la lentitud era lo único
+que daba precisión; ahora la precisión la da la fase de corrección, así que la lentitud
+solo cuesta tiempo.
+
+**Los avances marcados `V_APROX` se dejaron lentos a propósito.** Esos eran lentos por
+razones mecánicas — no tumbar la torre, no empujar el artefacto de más — y eso no ha
+cambiado. Son estos:
+
+```c
+retroceder(200, V_APROX, 4.0);   avanzar(55,  V_APROX, 2.5);
+avanzar(45,  V_APROX, 2.5);      retroceder(100, V_APROX, 2.5);
+avanzar(250, V_APROX, 5.0);      retroceder(110, V_APROX, 4.0);
+avanzar(45,  V_APROX, 2.5);      retroceder(31,  V_APROX, 2.5);
+retroceder(110, V_APROX, 4.0);
+```
+
+### Hasta dónde se puede subir
+
+- **Giros**: 120 rpm está verificado con datos. Puedes probar 150 (PWM 242), pero vigila
+  que las ruedas no patinen: si patinan, el giroscopio sigue midiendo el ángulo bien pero
+  el robot además se desplaza, y la posición se va.
+- **Rectas**: 158 rpm (todo el PWM) sin problema. El encoder mide la pasada del frenado y
+  la corrige. `RECTO_K_DECEL = 16` reparte el frenado sobre unos 250 grados de encoder
+  (≈ 14 cm) desde velocidad máxima.
+- Si subes mucho y ves que se pasa, sube `GIRO_K_DECEL` / `RECTO_K_DECEL` no: **bájalos**.
+  Un valor más bajo empieza a frenar antes.
+
+---
+
+## 8. Qué hacer ahora
+
+1. **Sube `calibrar_gyro.ino`** y corre la opción `t` (5 giros de 90°). Ahora usa el lazo
+   completo, así que verás los números reales. Deberían salir dentro de ±0,8°.
+2. Mira dónde queda el robot tras esos 5 giros. Si queda a un cuarto de vuelta de la
+   marca, la escala está bien. Si no, corre la opción `a`.
+3. **Sube `prueba_wwl5_opt.ino`** y corrige los ángulos en la pista. Con `DEPURAR 1` cada
+   maniobra te dice lo pedido, lo real y los milisegundos.
+
+   Los que casi seguro son múltiplos redondos:
+
+   | En el código | Debería ser |
+   |---|---|
+   | `girarDerechaGyro(85.0, ...)` | `90.0` |
+   | `girarIzquierdaGyro(85.0, ...)` | `90.0` |
+   | `girarIzquierdaGyro(84.0, ...)` | `90.0` |
+   | `girarIzquierdaGyro(175.0, ...)` | `180.0` |
+   | `girarDerechaGyro(89.5, ...)` | `90.0` |
+   | `girarDerechaGyro(87.0, ...)` | `90.0` |
+   | `girarDerechaGyro(99.0)` + `girarDerechaGyro(5.0)` | un solo `104.0`, o `90.0` si esos 14° extra eran compensación |
+
+   Los que no son múltiplos de 45 (30, 50, 25, 75, 35, 160) solo los sabes tú: mira en la
+   pista cuánto gira de más ahora y réstaselo.
+4. Si en el Serial aparece `<<< ATASCADO` en alguna maniobra, ahí hay un problema
+   mecánico o de umbral, no de código: mira ese punto de la pista.
+5. Cuando esté todo ajustado, pon `DEPURAR 0`.
+
+---
+
+## 9. Hardware — vale la pena revisarlo
 
 El congelamiento es un fallo de bus I2C, y los fallos de bus I2C casi siempre son
-eléctricos:
+eléctricos. Con **0 errores en 5 segundos** el bus está sano *en reposo*, pero la prueba
+se hizo con el robot parado. Aun así, por prevención:
 
 - **Condensador de 100 nF** entre VCC y GND lo más cerca posible del módulo MPU6050.
 - **Separar el cable RJ25 del giroscopio de los cables de motor.** Que no vayan
@@ -307,5 +451,6 @@ eléctricos:
   final de la sesión de pruebas, es esto.
 - Comprueba que el conector RJ25 hace buen contacto (es la avería más común del kit).
 
-Con la opción `s` de `calibrar_gyro` puedes medirlo objetivamente: deja el robot moviéndose
-y mira si el contador de errores sube.
+Para medirlo en movimiento: al terminar la rutina, el sketch imprime
+`FIN. Errores I2C: N | recuperaciones de bus: M`. Si N o M son distintos de cero después
+de una ronda completa, el bus está sufriendo con los motores en marcha.

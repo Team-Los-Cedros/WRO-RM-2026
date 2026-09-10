@@ -13,8 +13,9 @@
 3. [Comandos en la Raspberry Pi (SSH / Consola)](#3-comandos-en-la-raspberry-pi-ssh--consola)
 4. [Herramientas Web de Calibración en Vivo](#4-herramientas-web-de-calibración-en-vivo)
 5. [Protocolo de Comunicación Serial (MegaPi ↔ Raspberry Pi)](#5-protocolo-de-comunicación-serial-megapi--raspberry-pi)
-6. [Comandos Críticos para el Día de la Competencia](#6-comandos-críticos-para-el-día-de-la-competencia)
-7. [Checklist Operativo de Competencia (Flujo en Boxes y Mesa Oficial)](#7-checklist-operativo-de-competencia)
+6. [Programación de la Ruta en la MegaPi](#6-programación-de-la-ruta-en-la-megapi)
+7. [Comandos Críticos para el Día de la Competencia](#7-comandos-críticos-para-el-día-de-la-competencia)
+8. [Checklist Operativo de Competencia (Flujo en Boxes y Mesa Oficial)](#8-checklist-operativo-de-competencia)
 
 ---
 
@@ -300,7 +301,290 @@ T <found> <color> <ex> <ey> <area> <dist> <fps> <confianza>
 
 ---
 
-## 6. Comandos Críticos para el Día de la Competencia
+## 6. Programación de la Ruta en la MegaPi
+
+| Archivo | Para qué sirve |
+|---|---|
+| `robot_WRO/ruta_visitantes/prueba_wwl5_opt/prueba_wwl5_opt.ino` | **Sketch de trabajo.** La ruta se escribe dentro de `loop()`. |
+| `robot_WRO/ruta_visitantes/calibrar_gyro/calibrar_gyro.ino` | Herramienta de calibración por Monitor Serie (menú de letras). |
+| `DIAGNOSTICO_MEGAPI.md` | Por qué el código es así: análisis del firmware, las librerías y las mediciones. |
+
+---
+
+### 🥇 A. Las cuatro reglas de oro
+
+1. **Los grados de giro son reales.** No descuentes la pasada del frenado. Si quieres 90°, escribe `90.0`. El robot mide cuánto se pasó al frenar y lo corrige solo.
+2. **El último parámetro es un TIEMPO LÍMITE, no una espera.** La función vuelve en cuanto termina el movimiento. Ponerlo holgado no cuesta ni una décima; ponerlo corto corta la maniobra a la mitad.
+3. **La velocidad ya no da precisión.** Sube las velocidades. Solo baja una cuando haya una razón *mecánica* (no tumbar la torre, no empujar el artefacto de más).
+4. **Nunca uses `delay()` dentro de la ruta.** Usa `_delay(segundos)`. `delay()` congela el giroscopio, los encoders y el watchdog.
+
+---
+
+### 📏 B. Unidades
+
+| Magnitud | Unidad | Detalle |
+|---|---|---|
+| **Giros** | grados reales del robot | Los mide el giroscopio. Sin recorte de ±180: `180.0` y `360.0` son válidos. |
+| **Distancias** | grados del eje de salida | Una vuelta completa de rueda = `360`. |
+| **Velocidad** | rpm del eje de salida | `PWM = rpm × 1,61` (con `RPM_MAX = 158`). |
+| **Tiempos** | segundos | Siempre tiempo **límite**, nunca espera. |
+
+**Convertir milímetros a grados de encoder** — mídelo una vez y anótalo aquí:
+
+```c
+// 1. Marca el suelo, ejecuta esto solo, y mide con una regla lo que avanzó:
+avanzar(1000, V_RECTO, 8.0);
+
+// 2. MM_POR_GRADO = (milímetros medidos) / 1000
+// 3. A partir de ahí:  grados = milímetros / MM_POR_GRADO
+```
+
+> Valor medido en esta pista: `MM_POR_GRADO = ______`  ← **rellenar**
+
+---
+
+### 🚗 C. Referencia de funciones de movimiento
+
+```c
+avanzar   (long grados, float velocidad, float timeoutSeg);
+retroceder(long grados, float velocidad, float timeoutSeg);
+
+girarIzquierdaGyro(float grados, float velocidad);   // timeout por defecto 6 s
+girarDerechaGyro  (float grados, float velocidad);
+girarGyro         (float grados, float velocidad, int sentido, float timeoutSeg);
+                                                     // sentido: +1 izquierda, -1 derecha
+
+detener(float segundos);        // frena en seco y espera
+_delay (float segundos);        // pausa manteniendo vivos giroscopio y encoders
+```
+
+**Con sensores de línea:**
+
+```c
+// Avanza recto hasta cruzar una línea negra perpendicular y se centra sobre ella
+avanzarRectoGyroLineaPerpendicular(long  gradosMaximos,
+                                   float velocidadBase,
+                                   float timeoutSeg          = 10.0,
+                                   long  rango               = 135,   // barrido de centrado
+                                   long  offsetCentro        = 0,     // corrimiento fino
+                                   float velocidadEscaneo    = 35.0,
+                                   float Kp                  = 1.5,   // ignorado
+                                   float gradosMinimosBusqueda = 0.0);
+
+// Gira hasta encontrar la línea (o hasta gradosMaximos) y luego se centra
+girarIzquierdaGyroLinea(float gradosMaximos, float velocidad, float gradosMinimosBusqueda, float timeoutSeg = 4.0);
+girarDerechaGyroLinea  (float gradosMaximos, float velocidad, float gradosMinimosBusqueda, float timeoutSeg = 4.0);
+
+centrarEnLinea           (float velocidad, float timeoutSeg);
+centrarLineaPerpendicular(float velocidad, float timeoutSeg = 3.0, int ladoInicial = 0);
+
+seguirLineaTiempo (float segundos, float velocidadBase, float ganancia = 45.0);
+seguirLineaGrados (long grados,    float velocidadBase, float ganancia = 45.0, float tiempoMax = 10.0);
+
+int  leerLineaIzq();  bool esNegroIzq();   // A4, analógico, umbral UMBRAL_NEGRO_IZQ
+int  leerLineaDer();  bool esNegroDer();   // pin 2, digital
+void imprimirSensoresLinea();              // para ajustar los umbrales
+```
+
+**Compatibilidad (siguen existiendo, pero no las uses en ruta nueva):**
+`avanzarRectoGyro(grados, vel, Kp, tiempo)` — el `Kp` se ignora, equivale a `avanzar()`.
+`girarIzquierda/girarDerecha(gradosRueda, vel, t)` — giro medido por encoder, sin giroscopio.
+
+---
+
+### ⚡ D. Velocidades: mínimos y máximos
+
+Constantes ya definidas en el sketch. Úsalas en vez de números sueltos:
+
+```c
+#define V_GIRO_FINO      50.0f   // ajustes pequeños, giros con carga delicada
+#define V_GIRO           90.0f   // giro normal
+#define V_GIRO_RAPIDO   120.0f   // giros grandes (90°, 160°, 180°)
+
+#define V_APROX          35.0f   // acercarse a un objeto sin tumbarlo
+#define V_RECTO_MEDIO    60.0f   // tramos cortos, búsqueda de línea
+#define V_RECTO          90.0f   // uso general
+#define V_RECTO_RAPIDO  150.0f   // tramos largos
+```
+
+| rpm | PWM | Qué es |
+|---|---|---|
+| 24 / 27 | 39 / 43 | Mínimo absoluto para girar / avanzar |
+| **35** | 56 | **Mínimo recomendado.** Arranca siempre, con o sin carga |
+| 50 | 81 | Ajustes de pocos grados |
+| 90 | 145 | Uso general |
+| **120** | 194 | **Verificado**: 5 giros de 90° con ±0,16° de dispersión |
+| 150 | 242 | Tramos rectos largos |
+| 158 | 255 | Tope. Por encima de 158 se satura, no pasa nada más |
+
+* Por debajo del mínimo el código sube el PWM al suelo automáticamente. **Pedir 20 rpm y pedir 24 dan exactamente lo mismo**, así que poner velocidades bajas ya no sirve para nada.
+* **Techo de giros:** 120 rpm está verificado con datos. Puedes probar 150 vigilando que las ruedas no patinen — si patinan, el ángulo sale bien pero el robot además se desplaza y pierde posición.
+* **Techo de rectas:** 158 rpm sin problema. El encoder mide la pasada del frenado y la corrige.
+* Si al subir la velocidad se pasa de largo, **baja** `GIRO_K_DECEL` / `RECTO_K_DECEL`: un valor más bajo empieza a frenar antes.
+
+---
+
+### 🦾 E. Mecanismos
+
+```c
+abrirGarra();      cerrarGarra();      // micro-servos del puerto 7 (A10 / A11)
+bajar_pala();      subir_pala();       // servo grande del pin 5
+barrer();          posicionar();
+depositar();                           // baja despacio de 63° a 70° y abre la garra
+recolectar(modo);                      // ver tabla
+parabrisas(long pasos, float velocidad = 100.0);   // avanza barriendo con los micro-servos
+```
+
+| Llamada | Ángulo del servo grande | Uso típico |
+|---|---|---|
+| `recolectar(1)` | 63° | Posición de transporte |
+| `recolectar(2)` | 120° | Pala arriba / liberada |
+| `recolectar(3)` | 111° | Acomodar artefacto |
+| `recolectar(4)` | 95° | Sujetar torre |
+| `bajar_pala()` | 105° | Bajar a nivel de suelo |
+| `subir_pala()` | 105° → 0° (rampa) | Subida lenta |
+
+| Constante | Valor | |
+|---|---|---|
+| `GARRA_ABIERTA_S1` / `GARRA_ABIERTA_S2` | 0 / 180 | Garra abierta |
+| `GARRA_CERRADA_S1` / `GARRA_CERRADA_S2` | 108 / 58 | Garra cerrada |
+
+---
+
+### 🔧 F. Constantes de calibración
+
+Están todas juntas en el bloque **1. CONFIGURACIÓN** al principio del sketch.
+
+| Constante | Valor actual | De dónde sale | Cuándo volver a medirla |
+|---|---|---|---|
+| `RPM_MAX` | `158.0f` | Opción `v` del calibrador | Al cambiar motores o batería |
+| `TRIM_MOTOR_IZQ` | `0.938f` | `158,3 / 168,7` de la opción `v` | Al cambiar motores |
+| `GIRO_PWM_MIN` | `39` | Opción `m` | Al cambiar de superficie o ruedas |
+| `RECTO_PWM_MIN` | `43` | Opción `m` | Ídem |
+| `GYRO_ESCALA` | `1.000f` | Opción `a` | Solo si los giros salen sistemáticamente cortos o largos |
+| `UMBRAL_NEGRO_IZQ` | `31` | `imprimirSensoresLinea()` | **Cada vez que cambie la luz de la sala** |
+| `UMBRAL_NEGRO_DER` | `41` | Ídem (sensor digital, se ajusta con su potenciómetro) | Ídem |
+| `DEPURAR` | `1` | — | **Ponlo a `0` en competencia** |
+
+**Menú del calibrador** (Monitor Serie a 115200, escribir una letra):
+
+| Tecla | Prueba |
+|---|---|
+| `s` | Salud del bus I2C (errores y µs por lectura) |
+| `b` | Sesgo, ruido y deriva del giroscopio (robot quieto) |
+| `a` | **Escala del giroscopio automática** — el robot da 3 vueltas él solo |
+| `e` | Escala a mano (poco fiable, ver aviso abajo) |
+| `v` | Velocidad máxima de cada motor (ruedas al aire) |
+| `m` | PWM mínimo de arranque (robot en el suelo) |
+| `t` | 5 giros de 90° con el lazo completo |
+| `?` | Repetir el menú |
+
+> ⚠️ **No midas la escala del giroscopio girando el robot a mano.** El sensor integra rotación sobre *su propio eje Z*, no rumbo sobre el suelo. En cuanto lo levantas o lo inclinas, las dos cosas dejan de coincidir y salen resultados que se contradicen entre sí. Usa la opción `a`.
+
+---
+
+### 🖥️ G. Leer la salida de depuración
+
+Con `DEPURAR 1`, cada maniobra imprime una línea. **Todas empiezan por `# `** a propósito: ese es el prefijo de mensaje de depuración del protocolo de la sección 5, así que la Raspberry Pi las registra en telemetría sin intentar interpretarlas. **No quites ese prefijo.**
+
+```text
+# giro pedido=90.0 real=90.22 ms=812 errI2C=0
+# recto pedido=742 real=744 desvio=-0.31 ms=1904
+# FIN. Errores I2C: 0 | recuperaciones de bus: 0 | rumbo final: 271.44
+```
+
+| Campo | Significado |
+|---|---|
+| `pedido` | Lo que le pediste |
+| `real` | Lo que hizo de verdad, ya con la corrección aplicada |
+| `desvio` | Grados que se torció el rumbo durante una recta |
+| `ms` | Milisegundos que tardó la maniobra completa |
+| `errI2C` | Lecturas de giroscopio fallidas acumuladas. Debería quedarse en `0` |
+
+| Aviso | Qué significa | Qué hacer |
+|---|---|---|
+| `<<< TIMEOUT` | Se agotó el tiempo límite | Sube el último parámetro de esa llamada |
+| `<<< ATASCADO` | El robot estuvo 1,5 s sin avanzar | Problema **mecánico** en ese punto de la pista, no de código |
+| `# AVISO: ... reinicio por WATCHDOG` | La placa se colgó y se reinició sola | Revisa el cableado del giroscopio (sección I) |
+| `# ERROR: el MPU6050 no responde` | Cable RJ25 suelto o mal conectado | Reconecta el puerto del giroscopio |
+| `errI2C` o `recuperaciones` > 0 | El bus sufrió con los motores en marcha | Separa el cable RJ25 de los cables de motor |
+
+---
+
+### 🚦 H. Plantilla de una ruta nueva
+
+```c
+void loop()
+{
+  Serial.println(F("# Listo. Pulsa el boton."));
+
+  while (digitalRead(BOTON_PIN) == HIGH) tarea();   // esperar pulsación
+  while (digitalRead(BOTON_PIN) == LOW)  tarea();   // esperar que se suelte
+  _delay(0.5);
+
+  gyro.calibrar(150);      // el robot lleva rato quieto: mejor momento para el sesgo
+  rutinaIniciada = true;   // a partir de aquí el botón funciona como PARO DE EMERGENCIA
+
+  // ---------------- TU RUTA ----------------
+  avanzar(500, V_RECTO, 5.0);
+  girarDerechaGyro(90.0, V_GIRO);
+  recolectar(1);
+  // ...
+  // -----------------------------------------
+
+  detener(1.0);
+  while (1) tarea();       // no repetir la rutina
+}
+```
+
+* El **mismo botón** arranca la rutina y, una vez arrancada, la aborta: tres lecturas seguidas en 30 ms frenan los motores y dejan el puente en H en reposo.
+* `tarea()` es lo que mantiene vivos el giroscopio, los encoders y el watchdog. Cualquier bucle de espera propio tiene que llamarla.
+
+---
+
+### ⚠️ I. Errores frecuentes
+
+| Error | Consecuencia |
+|---|---|
+| Usar `delay()` en vez de `_delay()` | El giroscopio deja de integrar, los encoders se desactualizan y el watchdog reinicia la placa al segundo |
+| Poner el tiempo límite justo | La maniobra se corta a la mitad y sale `<<< TIMEOUT` |
+| Bajar la velocidad "para que salga más preciso" | No mejora nada y alarga la ronda. La precisión la da la fase de corrección |
+| Descontar la pasada del frenado en los grados | El robot ya la descuenta solo: se quedaría corto el doble |
+| Quitar el prefijo `# ` de los mensajes | La Raspberry Pi intenta interpretarlos como protocolo |
+| Dejar `DEPURAR 1` en competencia | Unos milisegundos por maniobra y telemetría innecesaria |
+| Conectar un motor al **SLOT4** | Sus pines están ocupados por el servo grande y los TCRT (ver tabla) |
+| Añadir más de 12 servos | La librería Servo pasaría a usar Timer1 y **rompería el PWM del motor izquierdo** |
+
+---
+
+### 🔌 J. Pines y timers ocupados
+
+| Función | Pines | Nota |
+|---|---|---|
+| **Motor izquierdo (SLOT1)** | enc 18 / 31, PWM **12**, dir 34 / 35 | PWM por Timer1 a 7 812 Hz |
+| **Motor derecho (SLOT2)** | enc 19 / 38, PWM **8**, dir 37 / 36 | PWM por Timer4 a 7 812 Hz |
+| **Giroscopio MPU6050** | I2C: 20 (SDA) / 21 (SCL) | Puerto RJ25 nº 8, bus a 400 kHz |
+| **Servo pala** | 5 | Coincide con el PWM del SLOT4 |
+| **Micro-servos garra** | A10 / A11 | Puerto RJ25 nº 7 |
+| **TCRT izquierdo** | A4 (analógico) | Coincide con DIR1 del SLOT4 |
+| **TCRT derecho** | 2 (digital) | Coincide con el encoder A del SLOT4 |
+| **Botón de inicio / paro** | 4 | `INPUT_PULLUP` |
+| **Serial hacia la Raspberry Pi** | 0 / 1 (USB) | 115200 8N1 |
+
+| Recurso | Estado |
+|---|---|
+| **SLOT3** | Libre (enc 3 / 49, PWM 9, dir 43 / 42) |
+| **SLOT4** | **NO usable** — sus cinco pines están repartidos entre el servo grande y los dos TCRT |
+| **Serial1** (pines 18 / 19) | **No disponible** — son las interrupciones de los encoders |
+| **Timer0** | `millis()` / `micros()` — no tocar |
+| **Timer1 / Timer4** | PWM de los motores de tracción |
+| **Timer2** | PWM del SLOT3 |
+| **Timer3** | Libre |
+| **Timer5** | Librería Servo (hasta 12 servos) |
+
+---
+
+## 7. Comandos Críticos para el Día de la Competencia
 
 ### 🛑 A. Cumplimiento Reglamentario WRO (Desactivación de Redes Inalámbricas)
 
@@ -410,13 +694,14 @@ sudo shutdown -h now
 
 ---
 
-## 7. Checklist Operativo de Competencia
+## 8. Checklist Operativo de Competencia
 
 Sigue este procedimiento en cada una de las rondas oficiales:
 
 ```mermaid
 flowchart TD
-    A[1. Encender Robot en Boxes] --> B[2. Calibrar Cámara UVC en :8082 si cambió la luz]
+    Z[0. Firmware MegaPi con DEPURAR 0 y batería cargada] --> A[1. Encender Robot en Boxes]
+    A --> B[2. Calibrar Cámara UVC en :8082 si cambió la luz]
     B --> C[3. Verificar HSV de Artefactos en :8081]
     C --> D[4. Comprobar Voltaje: vcgencmd get_throttled == 0x0]
     D --> E[5. Hacer respaldo: cp config.json config.json.bak_ronda]
@@ -429,6 +714,7 @@ flowchart TD
 
 | Paso | Acción | Comando / Verificación |
 |---|---|---|
+| **0** | Firmware de la MegaPi | `prueba_wwl5_opt.ino` con **`DEPURAR 0`** cargado y batería con carga alta (el PWM mínimo de arranque depende del voltaje). |
 | **1** | Encender robot en boxes | Conectar batería y esperar 25 s a que suba el sistema. |
 | **2** | Calibrar cámara UVC | Entrar a `http://robot-pi:8082`, usar **Auto-Medir y Fijar** y **Guardar**. |
 | **3** | Calibrar colores HSV | Entrar a `http://robot-pi:8081` y verificar las máscaras sobre los objetos en la pista. |

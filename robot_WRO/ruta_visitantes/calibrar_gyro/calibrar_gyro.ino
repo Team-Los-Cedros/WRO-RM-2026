@@ -13,11 +13,19 @@
 //
 //     s  Salud del bus I2C: errores y microsegundos por lectura
 //     b  Sesgo y ruido del giroscopio (deja el robot QUIETO)
-//     e  Escala del giroscopio: gira el robot 360 grados A MANO
+//     a  Escala del giroscopio AUTOMATICA: el robot da 3 vueltas solo
+//     e  Escala del giroscopio a mano (poco fiable, ver nota abajo)
 //     v  Velocidad maxima de los motores (rpm a PWM 255)
 //     m  PWM minimo de arranque (giro y recto)
 //     t  Prueba de repetibilidad: 5 giros de 90 grados
 //     ?  Vuelve a mostrar este menu
+//
+//  NOTA sobre la escala: NO la midas girando el robot a mano. El giroscopio
+//  integra rotacion sobre SU eje Z, no rumbo sobre el suelo. En cuanto lo
+//  levantas o lo inclinas, lo que mide deja de tener relacion con los grados
+//  que gira sobre la pista, y salen resultados que se contradicen entre si.
+//  Usa la opcion 'a': el robot gira solo, apoyado, y tu solo mides el error
+//  final con un transportador.
 // ============================================================================
 
 #include <Arduino.h>
@@ -126,10 +134,14 @@ void modoDirecto(void)
   Encoder_1.setMotionMode(DIRECT_MODE);
   Encoder_2.setMotionMode(DIRECT_MODE);
 }
+// Compensacion del motor izquierdo, igual que en el sketch principal.
+// Solo se aplica al giro: la prueba 'v' tiene que medir los motores tal cual.
+#define TRIM_MOTOR_IZQ 0.938f
+
 void pwmGiro(int16_t p)
 {
   p = constrain(p, -PWM_TOPE, PWM_TOPE);
-  Encoder_1.setMotorPwm(p);
+  Encoder_1.setMotorPwm((int16_t)((float)p * TRIM_MOTOR_IZQ));
   Encoder_2.setMotorPwm(p);
 }
 void pwmRuedas(int16_t izq, int16_t der)
@@ -151,6 +163,68 @@ void esperar(uint32_t ms)
 {
   uint32_t t = millis();
   while (millis() - t < ms) tarea();
+}
+
+// Espera a que el usuario pulse ENTER. Limpia el buffer ANTES y DESPUES, con
+// una pausa: si el monitor manda CR+LF, el segundo byte llega unos microsegundos
+// mas tarde y sin la pausa dispararia la siguiente espera al instante.
+void esperarEnter(void)
+{
+  while (Serial.available()) Serial.read();
+  while (!Serial.available()) tarea();
+  esperar(80);
+  while (Serial.available()) Serial.read();
+}
+
+// Frena, espera a que el robot quede REALMENTE quieto y devuelve.
+void asentar(uint16_t msMax)
+{
+  frenar();
+  uint32_t ini = millis(), desde = millis();
+  while (millis() - ini < msMax) {
+    tarea();
+    if (fabs(gW) > 4.0f) desde = millis();
+    else if (millis() - desde >= 60) return;
+  }
+}
+
+// Giro con la MISMA logica que el sketch principal: rampa de frenado,
+// asentamiento y correccion del error medido.
+void giroCerrado(float objetivo, int16_t pwmCrucero, uint16_t msMax)
+{
+  float    h0    = gH;
+  uint32_t tIni  = millis();
+  modoDirecto();
+
+  while (millis() - tIni < msMax) {
+    tarea();
+    float falta = objetivo - fabs(gH - h0);
+    if (falta <= 0.0f) break;
+    int16_t p = (int16_t)(40.0f * sqrt(falta));
+    p = constrain(p, (int16_t)39, pwmCrucero);
+    pwmGiro(p);
+    delay(5);
+  }
+  asentar(350);
+
+  for (uint8_t n = 0; n < 3; n++) {
+    float err = objetivo - fabs(gH - h0);
+    if (fabs(err) <= 0.8f) break;
+    int8_t dir = (err > 0.0f) ? 1 : -1;
+    uint32_t tC = millis(), tMov = millis();
+    while (millis() - tC < 700UL) {
+      tarea();
+      float e = objetivo - fabs(gH - h0);
+      if ((err > 0.0f && e <= 0.0f) || (err < 0.0f && e >= 0.0f)) break;
+      if (fabs(gW) > 8.0f) tMov = millis();
+      uint32_t parado = millis() - tMov;
+      int16_t p = 39 + (parado > 120 ? (int16_t)((parado - 120) / 12) : 0);
+      if (p > 120) p = 120;
+      pwmGiro((int16_t)(p * dir));
+      delay(5);
+    }
+    asentar(350);
+  }
 }
 
 // ============================================================================
@@ -204,27 +278,78 @@ void pruebaSesgo(void)
   Serial.print(F("Deriva/minuto : ")); Serial.print(gH * 20.0f, 2); Serial.println(F(" grados"));
 }
 
+/**
+ * Escala del giroscopio, metodo AUTOMATICO. Es el bueno.
+ *
+ * El robot da 3 vueltas completas el solo, apoyado en el suelo. Asi el eje Z
+ * del sensor se mantiene vertical todo el rato y lo que integra es rumbo de
+ * verdad. Girarlo a mano no vale: en cuanto lo inclinas o lo levantas, el
+ * integral del eje Z deja de ser el rumbo del suelo y la medida sale
+ * cualquier cosa (por eso dos intentos a mano pueden dar 0,77 y 1,49).
+ */
+void pruebaEscalaAuto(void)
+{
+  const float OBJETIVO = 1080.0f;   // 3 vueltas
+
+  Serial.println(F("\n--- Escala del giroscopio (AUTOMATICO) ---"));
+  Serial.println(F("1. Pon el robot EN EL SUELO, en la pista."));
+  Serial.println(F("2. Marca con cinta por donde apunta exactamente"));
+  Serial.println(F("   (pega una tira que sobresalga por delante y marca el suelo)."));
+  Serial.println(F("3. Pulsa ENTER y NO lo toques. Dara 3 vueltas."));
+  esperarEnter();
+
+  Serial.print(F("Calibrando sesgo... "));
+  gyroCalibrar(300);
+  Serial.println(F("girando."));
+
+  giroCerrado(OBJETIVO, 130, 25000UL);
+
+  float medido = fabs(gH);
+  Serial.print(F("El robot creyo girar: ")); Serial.print(medido, 2); Serial.println(F(" grados"));
+  Serial.println(F("Mide ahora cuanto se desvio de la marca:"));
+  Serial.println(F("  POSITIVO si se paso, NEGATIVO si le falto."));
+  Serial.println(F("Escribe el error en grados y pulsa ENTER (ej: 12  o  -8):"));
+
+  while (Serial.available()) Serial.read();
+  while (!Serial.available()) tarea();
+  float err = Serial.parseFloat();
+  esperar(80);
+  while (Serial.available()) Serial.read();
+
+  float escala = (OBJETIVO + err) / OBJETIVO;
+  Serial.print(F("\n>>> GYRO_ESCALA = ")); Serial.println(escala, 4);
+  if (fabs(escala - 1.0f) < 0.01f)
+    Serial.println(F("    (menos de un 1 % de error: dejalo en 1.000)"));
+  else if (fabs(escala - 1.0f) > 0.15f)
+    Serial.println(F("    OJO: mas de un 15 %. Repite la medida, algo salio mal."));
+}
+
+/**
+ * Escala del giroscopio, metodo MANUAL. Solo sirve si el robot se queda
+ * perfectamente plano sobre el suelo mientras lo giras, y si lo giras en menos
+ * de ~15 segundos. Usa mejor la opcion 'a'.
+ */
 void pruebaEscala(void)
 {
-  Serial.println(F("\n--- Escala del giroscopio ---"));
-  Serial.println(F("1. Marca la posicion del robot en el suelo."));
-  Serial.println(F("2. Pulsa ENTER, gira el robot A MANO 360 grados exactos"));
-  Serial.println(F("   (mejor 3 vueltas = 1080 grados, sale mas preciso)."));
-  Serial.println(F("3. Vuelve a pulsar ENTER."));
+  Serial.println(F("\n--- Escala del giroscopio (manual) ---"));
+  Serial.println(F("AVISO: este metodo solo vale si DESLIZAS el robot sobre el"));
+  Serial.println(F("suelo sin levantarlo ni inclinarlo, y sin tardar mucho."));
+  Serial.println(F("Si puedes, usa la opcion 'a' en su lugar."));
   Serial.print  (F("Calibrando sesgo... "));
   gyroCalibrar(300);
   Serial.println(F("listo. Pulsa ENTER para empezar."));
+  esperarEnter();
 
-  while (!Serial.available()) tarea();
-  while (Serial.available()) Serial.read();
   gH = 0.0f; gW = 0.0f; gWprev = 0.0f;
   gTUlt = gTMuestra = micros();
+  uint32_t tIni = millis();
   Serial.println(F("GIRANDO... pulsa ENTER al terminar."));
+  esperarEnter();
 
-  while (!Serial.available()) tarea();
-  while (Serial.available()) Serial.read();
-
-  Serial.print(F("El giroscopio midio: ")); Serial.print(gH, 2); Serial.println(F(" grados"));
+  uint32_t seg = (millis() - tIni) / 1000UL;
+  Serial.print(F("El giroscopio midio: ")); Serial.print(gH, 2);
+  Serial.print(F(" grados en ")); Serial.print(seg); Serial.println(F(" s"));
+  if (seg > 20) Serial.println(F("AVISO: has tardado demasiado. La medida no es fiable."));
   if (fabs(gH) > 30.0f) {
     Serial.print(F("Si giraste 360  -> GYRO_ESCALA = ")); Serial.println(360.0f  / fabs(gH), 4);
     Serial.print(F("Si giraste 720  -> GYRO_ESCALA = ")); Serial.println(720.0f  / fabs(gH), 4);
@@ -303,31 +428,28 @@ void pruebaPwmMinimo(void)
 void pruebaRepetibilidad(void)
 {
   Serial.println(F("\n--- 5 giros de 90 grados (robot EN EL SUELO) ---"));
+  Serial.println(F("Usa el mismo lazo cerrado que el sketch de competencia:"));
+  Serial.println(F("rampa de frenado + asentamiento + correccion del error."));
   Serial.println(F("Marca la posicion inicial. Arranca en 3 s..."));
   esperar(3000);
   gyroCalibrar(250);
 
+  float peor = 0.0f;
   for (uint8_t i = 0; i < 5; i++) {
     float h0 = gH;
-    modoDirecto();
-    uint32_t t = millis();
-    while (millis() - t < 4000UL) {
-      tarea();
-      float falta = 90.0f - fabs(gH - h0);
-      if (falta <= 0.0f) break;
-      int16_t p = (int16_t)(40.0f * sqrt(falta));
-      p = constrain(p, (int16_t)45, (int16_t)200);
-      pwmGiro(p);
-      delay(5);
-    }
-    frenar();
-    esperar(700);                       // dejar que se asiente y medir la pasada
+    giroCerrado(90.0f, 194, 5000UL);    // 194 = PWM de 120 rpm
+    float real = fabs(gH - h0);
+    if (fabs(real - 90.0f) > peor) peor = fabs(real - 90.0f);
     Serial.print(F("Giro ")); Serial.print(i + 1);
-    Serial.print(F(": ")); Serial.print(fabs(gH - h0), 2); Serial.println(F(" grados"));
-    esperar(800);
+    Serial.print(F(": ")); Serial.print(real, 2); Serial.println(F(" grados"));
+    esperar(600);
   }
+  Serial.print(F("Peor error: ")); Serial.print(peor, 2); Serial.println(F(" grados"));
   Serial.print(F("Rumbo acumulado tras 5 giros (deberia ser ~450): "));
   Serial.println(fabs(gH), 2);
+  Serial.println(F("Comprueba en el suelo: tras 5 giros de 90 el robot deberia"));
+  Serial.println(F("quedar a 90 grados de la marca inicial (450 = una vuelta + 90)."));
+  Serial.println(F("Si no es asi, la escala del giroscopio esta mal: usa la opcion 'a'."));
 }
 
 void menu(void)
@@ -335,7 +457,8 @@ void menu(void)
   Serial.println(F("\n================ CALIBRACION MEGAPI ================"));
   Serial.println(F(" s  Salud del bus I2C"));
   Serial.println(F(" b  Sesgo y ruido del giroscopio (robot quieto)"));
-  Serial.println(F(" e  Escala del giroscopio (girar 360 a mano)"));
+  Serial.println(F(" a  Escala del giroscopio AUTOMATICA  <-- usa esta"));
+  Serial.println(F(" e  Escala del giroscopio a mano (poco fiable)"));
   Serial.println(F(" v  Velocidad maxima (ruedas al aire)"));
   Serial.println(F(" m  PWM minimo de arranque (robot en el suelo)"));
   Serial.println(F(" t  5 giros de 90 grados (robot en el suelo)"));
@@ -378,6 +501,7 @@ void loop()
   switch (c) {
     case 's': pruebaSalud();          break;
     case 'b': pruebaSesgo();          break;
+    case 'a': pruebaEscalaAuto();     break;
     case 'e': pruebaEscala();         break;
     case 'v': pruebaVelocidad();      break;
     case 'm': pruebaPwmMinimo();      break;

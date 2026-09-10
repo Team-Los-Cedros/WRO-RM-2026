@@ -50,34 +50,54 @@
 #define I2C_HZ            400000UL  // 400 kHz. Bajalo a 200000 si ves errores I2C.
 #define I2C_TIMEOUT_US      4000UL  // El bus nunca bloquea mas que esto. NUNCA pongas 0.
 #define GYRO_PERIODO_US     2000UL  // Cada cuanto se lee el giro (2000 us = 500 Hz)
-#define GYRO_ESCALA          1.000f // Factor de calibracion. Lo da calibrar_gyro.ino
+// GYRO_ESCALA: factor de correccion de la lectura del giroscopio.
+// SE QUEDA EN 1.000 A PROPOSITO. Las dos medidas manuales del 09/09 se
+// contradicen entre si (0,7698 girando 360 y 1,4909 girando 1080: un factor 2
+// de diferencia), asi que ninguna de las dos es fiable. Girar el robot a mano
+// durante mas de un minuto no es una medida valida: cualquier inclinacion o
+// levantada mete rotacion en el eje Z que no es rumbo del suelo.
+// Para medirlo bien usa la opcion 'a' de calibrar_gyro.ino, que hace girar al
+// robot solo, apoyado en el suelo, 3 vueltas completas.
+#define GYRO_ESCALA          1.000f
 
 // ---- Lazo de control ----
 #define CTRL_PERIODO_US     5000UL  // Periodo del lazo de movimiento (5 ms = 200 Hz)
 #define ENC_PERIODO_US     10000UL  // Cada cuanto se llama Encoder_x.loop()
 
 // ---- Motores ----
-#define RPM_MAX             185.0f  // rpm del eje de salida con PWM 255 (calibrar_gyro.ino)
+// Medido 09/09: izq 168,7 rpm | der 158,3 rpm a PWM 255 (ruedas al aire).
+#define RPM_MAX             158.0f  // rpm del eje de salida con PWM 255
 #define PWM_TOPE               255
+// El motor izquierdo es un 6,2 % mas rapido. Se le baja el PWM para compensar,
+// asi el robot gira sobre su centro y el lazo de rumbo trabaja menos.
+// Se corrige el rapido hacia abajo (no el lento hacia arriba) para que la
+// compensacion siga valiendo tambien a PWM 255.
+#define TRIM_MOTOR_IZQ       0.938f // = 158.3 / 168.7
 
 // ---- Giros ----
-#define GIRO_PWM_MIN            45  // PWM minimo que todavia hace girar al robot
+// Umbral medido 09/09: arranca a girar con PWM 31; el calibrador sugiere 39.
+#define GIRO_PWM_MIN            39  // PWM minimo que todavia hace girar al robot
 #define GIRO_K_DECEL         40.0f  // Rampa de frenado: pwm = K * raiz(grados que faltan)
 #define GIRO_TOLERANCIA       0.8f  // Error aceptable, en grados
 #define GIRO_CORRECCIONES        3  // Reintentos finos como maximo
-#define GIRO_MS_ASENTAR        220  // Espera maxima a que el robot quede quieto
-#define GIRO_MS_CORR           600  // Duracion maxima de cada correccion fina
+#define GIRO_MS_ASENTAR        350  // Espera MAXIMA a estar quieto (sale antes si lo esta)
+#define GIRO_MS_CORR           700  // Duracion maxima de cada correccion fina
+#define GIRO_PWM_ANTIATASCO    120  // Tope al que puede subir el PWM si el robot no arranca
+#define GIRO_MS_ATASCO        1500  // Sin avanzar nada durante esto = atascado de verdad
 
 // ---- Avance recto ----
-#define RECTO_PWM_MIN           35
+// Umbral medido 09/09: arranca a avanzar con PWM 37; el calibrador sugiere 43.
+#define RECTO_PWM_MIN           43
 #define RECTO_K_DECEL        16.0f  // Rampa de frenado: pwm = K * raiz(grados que faltan)
 #define RECTO_KP              4.0f  // Rumbo: pwm de correccion por grado de desvio
 #define RECTO_KD              0.35f // Amortiguacion: pwm por (grado/segundo)
 #define RECTO_TOLERANCIA        12  // Error aceptable, en grados de encoder
 #define RECTO_CORREGIR           1  // 1 = corrige la distancia despues de frenar
+#define RECTO_PWM_ANTIATASCO   120
+#define RECTO_MS_ATASCO       1500
 
 // ---- Escaneo de linea ----
-#define ESCANEO_PWM_MIN         42  // Por debajo de esto el robot no arranca
+#define ESCANEO_PWM_MIN         48  // Arranca y para muchas veces: necesita mas margen
 
 // ---- Seguridad ----
 #define USAR_WATCHDOG            1  // 1 = si algo se cuelga, la placa se reinicia sola
@@ -86,6 +106,11 @@
 #define DEPURAR                  1  // 1 = imprime por Serial lo pedido, lo real y los ms
                                     // de cada movimiento. Ponlo a 0 en competencia:
                                     // ahorra unos ms por maniobra.
+                                    // Todas las lineas empiezan por "# " a proposito: es
+                                    // el prefijo de mensaje de depuracion del protocolo
+                                    // con la Raspberry Pi, asi que la Pi las registra en
+                                    // telemetria sin intentar interpretarlas. NO quites
+                                    // ese prefijo si vas a conectar la vision.
 
 // ---- Pines ----
 #define BOTON_PIN        4
@@ -93,6 +118,34 @@
 #define PIN_TCRT_DER     2
 #define PIN_SERVO_PALA   5
 #define MPU_ADDR      0x68
+
+// ============================================================================
+//  VELOCIDADES  (rpm del eje de salida, la misma unidad de siempre)
+//
+//  Con RPM_MAX = 158 la conversion es:   PWM = rpm x 1,61
+//
+//     rpm   PWM   notas
+//     ----  ----  --------------------------------------------------------
+//      24    39   minimo absoluto para GIRAR (por debajo se queda parado)
+//      27    43   minimo absoluto para AVANZAR
+//      35    56   minimo RECOMENDADO: arranca siempre, con o sin carga
+//      50    81   maniobras finas, ajustes de pocos grados
+//      90   145   uso general
+//     120   194   probado el 09/09: 5 giros de 90 con +-0,16 grados
+//     150   242   tramos largos
+//     158   255   tope. Por encima de 158 no pasa nada: se satura en 255.
+//
+//  Por debajo de los minimos el codigo sube el PWM al suelo automaticamente,
+//  asi que no se rompe nada, pero pedir 20 rpm o pedir 24 da lo mismo.
+// ============================================================================
+#define V_GIRO_FINO      50.0f   // ajustes pequenos, giros con carga delicada
+#define V_GIRO           90.0f   // giro normal
+#define V_GIRO_RAPIDO   120.0f   // giros grandes (90, 160, 180)
+
+#define V_APROX          35.0f   // acercarse a un objeto sin tumbarlo
+#define V_RECTO_MEDIO    60.0f   // tramos cortos, busqueda de linea
+#define V_RECTO          90.0f   // uso general
+#define V_RECTO_RAPIDO  150.0f   // tramos largos
 
 // Umbrales de los TCRT5000
 int UMBRAL_NEGRO_IZQ = 31;
@@ -452,10 +505,10 @@ static inline void modoDirecto(void)
   Encoder_2.setMotionMode(DIRECT_MODE);
 }
 
-// izq/der > 0 = esa rueda hacia adelante
+// izq/der > 0 = esa rueda hacia adelante. TRIM_MOTOR_IZQ iguala los dos motores.
 static inline void pwmRuedas(int16_t izq, int16_t der)
 {
-  Encoder_1.setMotorPwm(constrain(izq, -PWM_TOPE, PWM_TOPE));
+  Encoder_1.setMotorPwm(constrain((int16_t)((float)izq * TRIM_MOTOR_IZQ), -PWM_TOPE, PWM_TOPE));
   Encoder_2.setMotorPwm(constrain(-der, -PWM_TOPE, PWM_TOPE));
 }
 
@@ -463,7 +516,7 @@ static inline void pwmRuedas(int16_t izq, int16_t der)
 static inline void pwmGiro(int16_t p)
 {
   p = constrain(p, -PWM_TOPE, PWM_TOPE);
-  Encoder_1.setMotorPwm(p);
+  Encoder_1.setMotorPwm((int16_t)((float)p * TRIM_MOTOR_IZQ));
   Encoder_2.setMotorPwm(p);
 }
 
@@ -501,7 +554,7 @@ void pararTodo(void)
 #if USAR_WATCHDOG
   wdt_disable();
 #endif
-  Serial.println(F("PARADA por boton"));
+  Serial.println(F("# PARADA por boton"));
   for (;;) { delay(200); }
 }
 
@@ -518,7 +571,18 @@ void pararTodo(void)
 //  subir la velocidad todo lo que aguante la mecanica.
 // ============================================================================
 
-void girarGyro(float gradosObjetivo, float velocidad, int sentido, float timeoutSeg = 3.0f)
+// Refuerzo anti-atasco: devuelve cuantas cuentas de PWM hay que sumar al suelo
+// cuando el robot lleva msParado sin moverse. Sube +1 cada 12 ms tras una
+// espera de 120 ms, hasta el tope.
+static inline int16_t refuerzoAntiAtasco(uint32_t msParado, int16_t suelo, int16_t tope)
+{
+  if (msParado <= 120) return suelo;
+  int16_t extra = (int16_t)((msParado - 120) / 12);
+  int16_t v = suelo + extra;
+  return (v > tope) ? tope : v;
+}
+
+void girarGyro(float gradosObjetivo, float velocidad, int sentido, float timeoutSeg = 6.0f)
 {
   if (gradosObjetivo <= 0.0f) return;
 
@@ -531,18 +595,36 @@ void girarGyro(float gradosObjetivo, float velocidad, int sentido, float timeout
   modoDirecto();
   uint32_t tCtrl = micros();
   bool porTimeout = false;
+  bool porAtasco  = false;
 
   // ---- Fase 1: crucero con rampa de frenado ----
+  float    mejor     = 0.0f;      // maximo recorrido visto hasta ahora
+  uint32_t tProgreso = millis();  // ultima vez que el robot avanzo de verdad
+
   for (;;) {
     tarea();
-    float falta = gradosObjetivo - fabs(gyro.grados() - h0);
+    float recorrido = fabs(gyro.grados() - h0);
+    float falta     = gradosObjetivo - recorrido;
     if (falta <= 0.0f) break;
     if (millis() - tIni > tMax) { porTimeout = true; break; }
 
+    // Detector de progreso. Sustituye al timeout fijo como criterio de fallo:
+    // un giro lento pero que avanza NO se aborta; uno bloqueado se corta ya.
+    if (recorrido > mejor + 0.5f) { mejor = recorrido; tProgreso = millis(); }
+    else if (millis() - tProgreso > GIRO_MS_ATASCO) { porAtasco = true; break; }
+
     int16_t p = (int16_t)(GIRO_K_DECEL * sqrt(falta));
     p = constrain(p, (int16_t)GIRO_PWM_MIN, pwmCrucero);
-    pwmGiro(sentido > 0 ? p : (int16_t)-p);
 
+    // Si el robot no arranca (roce, alfombra, bateria baja), empuja mas fuerte.
+    // Solo lejos del objetivo: cerca hay que dejar que la rampa frene.
+    if (falta > 6.0f) {
+      int16_t suelo = refuerzoAntiAtasco(millis() - tProgreso,
+                                         GIRO_PWM_MIN, GIRO_PWM_ANTIATASCO);
+      if (p < suelo) p = suelo;
+    }
+
+    pwmGiro(sentido > 0 ? p : (int16_t)-p);
     esperarPeriodo(tCtrl);
   }
 
@@ -550,28 +632,28 @@ void girarGyro(float gradosObjetivo, float velocidad, int sentido, float timeout
   esperarQuieto(GIRO_MS_ASENTAR);
 
   // ---- Fase 2: correcciones finas ----
-  for (uint8_t n = 0; n < GIRO_CORRECCIONES && !porTimeout; n++) {
+  for (uint8_t n = 0; n < GIRO_CORRECCIONES && !porTimeout && !porAtasco; n++) {
     tarea();
     float err = gradosObjetivo - fabs(gyro.grados() - h0);
     if (fabs(err) <= GIRO_TOLERANCIA) break;
     if (millis() - tIni > tMax) { porTimeout = true; break; }
 
-    int8_t   dir     = (err > 0.0f) ? (int8_t)sentido : (int8_t)-sentido;
-    int16_t  p       = GIRO_PWM_MIN;
-    uint32_t tCorr   = millis();
-    uint32_t tSubir  = millis();
-    uint32_t tCtrl2  = micros();
+    int8_t   dir    = (err > 0.0f) ? (int8_t)sentido : (int8_t)-sentido;
+    uint32_t tCorr  = millis();
+    uint32_t tMov   = millis();
+    uint32_t tCtrl2 = micros();
 
     while (millis() - tCorr < GIRO_MS_CORR) {
       tarea();
       float e = gradosObjetivo - fabs(gyro.grados() - h0);
       if ((err > 0.0f && e <= 0.0f) || (err < 0.0f && e >= 0.0f)) break;
 
-      // Si el robot no arranca por el roce, sube el PWM poco a poco.
-      if (fabs(gyro.velocidad()) < 8.0f && millis() - tSubir > 40) {
-        tSubir = millis();
-        if (p < pwmCrucero) p += 3;
-      }
+      // El tope es GIRO_PWM_ANTIATASCO, NO pwmCrucero: en los giros lentos
+      // pwmCrucero vale lo mismo que GIRO_PWM_MIN y la correccion no podia
+      // subir de ahi, asi que si el robot se quedaba pegado no salia nunca.
+      if (fabs(gyro.velocidad()) > 8.0f) tMov = millis();
+      int16_t p = refuerzoAntiAtasco(millis() - tMov, GIRO_PWM_MIN, GIRO_PWM_ANTIATASCO);
+
       pwmGiro(dir > 0 ? p : (int16_t)-p);
       esperarPeriodo(tCtrl2);
     }
@@ -580,11 +662,12 @@ void girarGyro(float gradosObjetivo, float velocidad, int sentido, float timeout
   }
 
 #if DEPURAR
-  Serial.print(F("giro pedido="));  Serial.print(gradosObjetivo, 1);
+  Serial.print(F("# giro pedido="));  Serial.print(gradosObjetivo, 1);
   Serial.print(F(" real="));        Serial.print(fabs(gyro.grados() - h0), 2);
   Serial.print(F(" ms="));          Serial.print(millis() - tIni);
   Serial.print(F(" errI2C="));      Serial.print(gyro.errores());
   if (porTimeout) Serial.print(F("  <<< TIMEOUT"));
+  if (porAtasco)  Serial.print(F("  <<< ATASCADO"));
   Serial.println();
 #endif
 }
@@ -627,18 +710,31 @@ void moverRecto(long grados, float velocidad, float timeoutSeg, int8_t sentido)
 
   modoDirecto();
   uint32_t tCtrl = micros();
+  bool porTimeout = false, porAtasco = false;
+
+  long     mejor     = 0;
+  uint32_t tProgreso = millis();
 
   for (;;) {
     tarea();
     long avance = (labs(posGrados(Encoder_1) - p0i) + labs(posGrados(Encoder_2) - p0d)) / 2;
     long falta  = grados - avance;
     if (falta <= 0) break;
-    if (millis() - tIni > tMax) break;
+    if (millis() - tIni > tMax) { porTimeout = true; break; }
+
+    if (avance > mejor + 3) { mejor = avance; tProgreso = millis(); }
+    else if (millis() - tProgreso > RECTO_MS_ATASCO) { porAtasco = true; break; }
 
     int16_t base = (int16_t)(RECTO_K_DECEL * sqrt((float)falta));
     base = constrain(base, (int16_t)RECTO_PWM_MIN, pwmCrucero);
-    aplicarRecto((int16_t)(base * sentido), h0);
 
+    if (falta > 25) {
+      int16_t suelo = refuerzoAntiAtasco(millis() - tProgreso,
+                                         RECTO_PWM_MIN, RECTO_PWM_ANTIATASCO);
+      if (base < suelo) base = suelo;
+    }
+
+    aplicarRecto((int16_t)(base * sentido), h0);
     esperarPeriodo(tCtrl);
   }
 
@@ -647,26 +743,28 @@ void moverRecto(long grados, float velocidad, float timeoutSeg, int8_t sentido)
 
 #if RECTO_CORREGIR
   // ---- Correccion fina de distancia (mide lo que se paso al frenar) ----
-  for (uint8_t n = 0; n < 2; n++) {
+  for (uint8_t n = 0; n < 2 && !porTimeout && !porAtasco; n++) {
     tarea();
     long avance = (labs(posGrados(Encoder_1) - p0i) + labs(posGrados(Encoder_2) - p0d)) / 2;
     long err    = grados - avance;
     if (labs(err) <= RECTO_TOLERANCIA) break;
-    if (millis() - tIni > tMax) break;
+    if (millis() - tIni > tMax) { porTimeout = true; break; }
 
     int8_t   dir    = (err > 0) ? sentido : (int8_t)-sentido;
-    int16_t  p      = RECTO_PWM_MIN;
+    long     ultAv  = avance;
     uint32_t tCorr  = millis();
-    uint32_t tSubir = millis();
+    uint32_t tMov   = millis();
     uint32_t tCtrl2 = micros();
 
-    while (millis() - tCorr < 400) {
+    while (millis() - tCorr < 500) {
       tarea();
       long av = (labs(posGrados(Encoder_1) - p0i) + labs(posGrados(Encoder_2) - p0d)) / 2;
       long e  = grados - av;
       if ((err > 0 && e <= 0) || (err < 0 && e >= 0)) break;
 
-      if (millis() - tSubir > 40) { tSubir = millis(); if (p < 90) p += 4; }
+      if (labs(av - ultAv) > 2) { ultAv = av; tMov = millis(); }
+      int16_t p = refuerzoAntiAtasco(millis() - tMov, RECTO_PWM_MIN, RECTO_PWM_ANTIATASCO);
+
       aplicarRecto((int16_t)(p * dir), h0);
       esperarPeriodo(tCtrl2);
     }
@@ -677,10 +775,13 @@ void moverRecto(long grados, float velocidad, float timeoutSeg, int8_t sentido)
 
 #if DEPURAR
   long avanceFinal = (labs(posGrados(Encoder_1) - p0i) + labs(posGrados(Encoder_2) - p0d)) / 2;
-  Serial.print(F("recto pedido=")); Serial.print(grados);
+  Serial.print(F("# recto pedido=")); Serial.print(grados);
   Serial.print(F(" real="));        Serial.print(avanceFinal);
   Serial.print(F(" desvio="));      Serial.print(gyro.grados() - h0, 2);
-  Serial.print(F(" ms="));          Serial.println(millis() - tIni);
+  Serial.print(F(" ms="));          Serial.print(millis() - tIni);
+  if (porTimeout) Serial.print(F("  <<< TIMEOUT"));
+  if (porAtasco)  Serial.print(F("  <<< ATASCADO"));
+  Serial.println();
 #endif
 }
 
@@ -751,7 +852,7 @@ bool esNegroDer(void) { return leerLineaDer(); }
 
 void imprimirSensoresLinea(void)
 {
-  Serial.print(F("TCRT Izq (A4): "));
+  Serial.print(F("# TCRT Izq (A4): "));
   Serial.print(leerLineaIzq());
   Serial.print(F(" | TCRT Der (D2): "));
   Serial.println(leerLineaDer());
@@ -958,7 +1059,7 @@ void avanzarRectoGyroLineaPerpendicular(long  gradosMaximos,
                                         float timeoutSeg = 10.0f,
                                         long  rango = 135,
                                         long  offsetCentro = 0,
-                                        float velocidadEscaneo = 10.0f,
+                                        float velocidadEscaneo = 35.0f,
                                         float Kp = 1.5f,
                                         float gradosMinimosBusqueda = 0.0f)
 {
@@ -1274,13 +1375,13 @@ void setup()
   //  GIROSCOPIO (lo ultimo, con el robot totalmente quieto)
   // ------------------------------------------------------------------
   if (!gyro.begin()) {
-    Serial.println(F("ERROR: el MPU6050 no responde. Revisa el cable RJ25."));
+    Serial.println(F("# ERROR: el MPU6050 no responde. Revisa el cable RJ25."));
   } else if (!gyro.calibrar(300)) {
-    Serial.println(F("AVISO: calibracion de giro dudosa (el robot se movio?)."));
+    Serial.println(F("# AVISO: calibracion de giro dudosa (el robot se movio?)."));
   }
 
-  Serial.print(F("Sesgo giro Z = ")); Serial.println(gyro.sesgo(), 1);
-  if (mcusr_copia & _BV(WDRF)) Serial.println(F("AVISO: el arranque anterior fue un reinicio por WATCHDOG."));
+  Serial.print(F("# Sesgo giro Z = ")); Serial.println(gyro.sesgo(), 1);
+  if (mcusr_copia & _BV(WDRF)) Serial.println(F("# AVISO: el arranque anterior fue un reinicio por WATCHDOG."));
 
 #if USAR_WATCHDOG
   wdt_enable(WDTO_1S);      // si algo bloquea mas de 1 s, la placa se reinicia
@@ -1290,18 +1391,26 @@ void setup()
 // ============================================================================
 //  13. RUTINA DE COMPETENCIA
 //
-//  RECORDATORIO: los angulos de abajo son los que tenias, y llevaban
-//  descontada la pasada del frenado. Ahora el robot gira exactamente lo que
-//  le pides, asi que la mayoria hay que subirlos a su valor real.
-//  El ultimo parametro de avanzar/retroceder/avanzarRectoGyro ya NO es una
-//  espera fija: ahora es un TIEMPO LIMITE de seguridad. La funcion vuelve en
-//  cuanto termina el movimiento, asi que puedes dejarlo holgado sin perder
-//  tiempo.
+//  ANGULOS: son los que tenias, sin tocar. Llevaban descontada la pasada del
+//  frenado, asi que ahora que el robot gira lo que le pides hay que subirlos a
+//  su valor real (85 -> 90, 175 -> 180...). Eso lo ajustas tu en la pista.
+//
+//  VELOCIDADES: ya actualizadas a las constantes V_* de arriba, calculadas con
+//  RPM_MAX = 158 (medido el 09/09). Se han subido todos los giros, porque la
+//  precision ya no depende de la velocidad. Se han dejado lentos a proposito
+//  los avances marcados V_APROX: esos son lentos por razones MECANICAS (no
+//  tumbar la torre, no empujar el artefacto), no por precision de angulo.
+//
+//  TIEMPOS: el ultimo parametro de avanzar/retroceder ya NO es una espera fija,
+//  es un TIEMPO LIMITE de seguridad. La funcion vuelve en cuanto termina el
+//  movimiento, asi que ponerlo holgado no cuesta nada. Ademas hay un detector
+//  de atasco: si el robot deja de avanzar durante 1,5 s, aborta la maniobra sin
+//  esperar al limite.
 // ============================================================================
 
 void loop()
 {
-  Serial.println(F("Listo. Pulsa el boton."));
+  Serial.println(F("# Listo. Pulsa el boton."));
 
   while (digitalRead(BOTON_PIN) == HIGH) tarea();   // esperar pulsacion
   while (digitalRead(BOTON_PIN) == LOW)  tarea();   // esperar que se suelte
@@ -1315,95 +1424,95 @@ void loop()
   rutinaIniciada = true;
 
   /* --- colores no aleatorios --- */
-  girarDerechaGyro(85.0, 20.0);
-  avanzarRectoGyro(202, 50, 1.5, 3.0);
-  girarIzquierdaGyro(85.0, 20.0);
+  girarDerechaGyro(85.0, V_GIRO);
+  avanzar(202, V_RECTO, 4.0);
+  girarIzquierdaGyro(85.0, V_GIRO);
 
-  avanzarRectoGyro(742, 50, 1.5, 7.0);
+  avanzar(742, V_RECTO_MEDIO, 8.0);        // llega hasta los artefactos
   recolectar(2);
-  retroceder(400, 25, 5.0);
+  retroceder(400, V_RECTO_MEDIO, 6.0);
 
-  girarIzquierdaGyro(84.0, 35.0);
-  avanzarRectoGyro(1157, 150, 6.0, 5.0);
+  girarIzquierdaGyro(84.0, V_GIRO);
+  avanzar(1157, V_RECTO_RAPIDO, 7.0);
   _delay(0.3);
-  avanzarRectoGyroLineaPerpendicular(730, 45, 10.0, 90, 4);
+  avanzarRectoGyroLineaPerpendicular(730, V_RECTO_MEDIO, 12.0, 90, 4);
   _delay(0.3);
 
-  girarIzquierdaGyro(175.0, 30.0);
-  avanzarRectoGyro(205, 45, 6.0, 2.0);
+  girarIzquierdaGyro(175.0, V_GIRO_RAPIDO);
+  avanzar(205, V_RECTO_MEDIO, 4.0);
   recolectar(1);
 
   // Separar el rojo
-  retroceder(200, 25, 3.0);
-  girarDerechaGyro(30.0, 40.0);
-  avanzar(366, 40, 4.0);
+  retroceder(200, V_APROX, 4.0);
+  girarDerechaGyro(30.0, V_GIRO_FINO);
+  avanzar(366, V_RECTO_MEDIO, 5.0);
   recolectar(2);
-  girarDerechaGyro(50.0, 40.0);
+  girarDerechaGyro(50.0, V_GIRO);
 
   // Empujar a la zona
-  avanzar(810, 125, 3.5);
+  avanzar(810, V_RECTO, 5.0);
   recolectar(1);
-  avanzar(55, 90, 2.0);
-  retroceder(750, 85, 4.0);
+  avanzar(55, V_APROX, 2.5);
+  retroceder(750, V_RECTO, 5.0);
 
   // Voltear hacia el verde  (este era el giro que fallaba al cruzar el +-180)
   recolectar(2);
-  girarIzquierdaGyro(160.0, 32.0);
-  avanzar(505, 145, 3.0);
+  girarIzquierdaGyro(160.0, V_GIRO_RAPIDO);
+  avanzar(505, V_RECTO, 4.0);
 
   // Acomodar el verde si queda fuera
   recolectar(3);
   servoGarra2.write(GARRA_CERRADA_S2);
-  girarIzquierdaGyro(35.0, 40.0);
+  girarIzquierdaGyro(35.0, V_GIRO_FINO);
   abrirGarra();
-  avanzar(45, 60, 2.0);
+  avanzar(45, V_APROX, 2.5);
 
   // ---- TORRES AMARILLAS ----
-  retroceder(100, 65, 2.0);
-  retroceder(870, 220, 3.0);
-  girarDerechaGyro(99.0, 30.0);
+  retroceder(100, V_APROX, 2.5);
+  retroceder(870, V_RECTO_RAPIDO, 5.0);
+  girarDerechaGyro(99.0, V_GIRO);
   _delay(0.3);
-  girarDerechaGyro(5.0, 15.0);
+  girarDerechaGyro(5.0, V_GIRO_FINO);
   recolectar(1);
 
   // Ir y centrar en linea
-  avanzarRectoGyro(160, 195, 3.5, 3.0);
+  avanzar(160, V_RECTO, 3.5);
   _delay(0.3);
-  avanzarRectoGyroLineaPerpendicular(390, 35, 10.0, 40, 2, 30, 2, 0);
+  avanzarRectoGyroLineaPerpendicular(390, V_RECTO_MEDIO, 12.0, 40, 2, 40, 0, 0);
 
   // Ir a la AMARILLA
-  avanzar(315, 78, 3.0);
-  girarDerechaGyro(89.5, 30.0);
+  avanzar(315, V_RECTO_MEDIO, 4.0);
+  girarDerechaGyro(89.5, V_GIRO);
   _delay(0.3);
 
-  // Recolectar
+  // Recolectar (aqui NO se sube la velocidad: se acerca a la torre)
   bajar_pala();
-  avanzar(250, 30, 4.0);
+  avanzar(250, V_APROX, 5.0);
   cerrarGarra();
   recolectar(4);
-  retroceder(110, 15, 3.5);
+  retroceder(110, V_APROX, 4.0);
   abrirGarra();
-  avanzar(45, 65, 1.5);
+  avanzar(45, V_APROX, 2.5);
   cerrarGarra();
 
   // Ir a llevar la torre
-  retroceder(31, 35, 2.0);
-  girarDerechaGyro(87.0, 30.0);
+  retroceder(31, V_APROX, 2.5);
+  girarDerechaGyro(87.0, V_GIRO_FINO);     // lleva la torre: giro suave
   recolectar(1);
-  avanzarRectoGyro(2027, 207, 22.5, 8.0);
+  avanzar(2027, V_RECTO_RAPIDO, 10.0);
   depositar();
-  retroceder(110, 25, 4.0);
+  retroceder(110, V_APROX, 4.0);
 
-  girarDerechaGyro(25.0, 50.0);
-  avanzarRectoGyro(590, 207, 22.5, 3.0);
+  girarDerechaGyro(25.0, V_GIRO);
+  avanzar(590, V_RECTO, 4.0);
   recolectar(2);
-  girarDerechaGyro(75.0, 50.0);
-  parabrisas(550);
+  girarDerechaGyro(75.0, V_GIRO);
+  parabrisas(550, V_RECTO_MEDIO);
 
   detener(1.0);
 
 #if DEPURAR
-  Serial.print(F("FIN. Errores I2C: "));       Serial.print(gyro.errores());
+  Serial.print(F("# FIN. Errores I2C: "));       Serial.print(gyro.errores());
   Serial.print(F(" | recuperaciones de bus: ")); Serial.print(gyro.recuperaciones());
   Serial.print(F(" | rumbo final: "));         Serial.println(gyro.grados(), 2);
 #endif
