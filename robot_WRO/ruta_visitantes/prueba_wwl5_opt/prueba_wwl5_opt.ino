@@ -1481,13 +1481,13 @@ void loop()
   avanzarRectoGyroLineaPerpendicular(390, V_RECTO_MEDIO, 12.0, 40, 2, 40, 0, 0);
 
   // Ir a la AMARILLA
-  avanzar(315, V_RECTO_MEDIO, 4.0);
+  avanzar(345, V_RECTO_MEDIO, 4.0);
   girarDerechaGyro(89.5, V_GIRO);
   _delay(0.3);
 
   // Recolectar (aqui NO se sube la velocidad: se acerca a la torre)
   bajar_pala();
-  avanzar(250, V_APROX, 5.0);
+  avanzar(200, V_APROX, 5.0);
   cerrarGarra();
   recolectar(4);
   retroceder(110, V_APROX, 4.0);
@@ -1499,7 +1499,7 @@ void loop()
   retroceder(31, V_APROX, 2.5);
   girarDerechaGyro(87.0, V_GIRO_FINO);     // lleva la torre: giro suave
   recolectar(1);
-  avanzar(2027, V_RECTO_RAPIDO, 10.0);
+  avanzar(2087, V_RECTO_RAPIDO, 10.0);
   depositar();
   retroceder(110, V_APROX, 4.0);
 
