@@ -1095,9 +1095,9 @@ void loop() {
   retroceder(400, 25, 4.5);
 
   girarIzquierdaGyro(84.0, 35.0);
-  avanzarRectoGyro(1105, 165, 6.0, 4.5);
+  avanzarRectoGyro(1155, 165, 6.0, 4.5);
   _delay(1.0);
-  avanzarRectoGyroLineaPerpendicular(730, 45, 10.0, 90, 4);
+  avanzarRectoGyroLineaPerpendicular(730, 45, 10.0, 90, 4, 20);
   _delay(0.5);
 
   // Estos dos giros de 90 se podrian unir en girarIzquierdaGyro(180.0, 50.0)
@@ -1141,7 +1141,7 @@ void loop() {
   girarDerechaGyro(5.0, 15.0);
   recolectar(1);
   //Ir y centrar en linea 
-  avanzarRectoGyro(175, 195, 3.5, 2.5);
+  avanzarRectoGyro(120, 195, 3.5, 2.5);
   _delay(0.3);
   avanzarRectoGyroLineaPerpendicular(390, 35, 10.0, 40, 2, 30, 2, 0);
 
@@ -1161,18 +1161,18 @@ void loop() {
   visionCentrarRapido(1.8, 8);
 
   // Avance recto y captura precisa de la torre
-  avanzar(260, 45, 2.2);
+  avanzar(265, 45, 2.2);
   cerrarGarra();
   recolectar(4);
   _delay(0.4);
-  retroceder(110, 35, 1.5);
+  retroceder(115, 35, 1.5);
   visionPausar();
 
   // =========================================================================
   // FASE 2: TRANSPORTE Y ALINEACION PREVIA DEL DESTINO (ANTES DEL PUNTO CIEGO)
   // =========================================================================
   retroceder(31, 35, 1.0);
-  girarDerechaGyro(87.0, 35.0);
+  girarDerechaGyro(87.0, 30.0);
   recolectar(1); // Posicion elevada de transporte
   _delay(0.3);
 
@@ -1193,7 +1193,7 @@ void loop() {
   visionPausar();
 
   // Tramo 2: Avance recto final con giroscopio (en el punto ciego de la pala)
-  avanzarRectoGyro(DIST_FINAL, 160, 2.0, 2.8);
+  avanzarRectoGyro(DIST_FINAL, 90, 2.0, 2.8);
   detener(0.2);
 
   // Depositar la torre con precision sobre el pedestal
