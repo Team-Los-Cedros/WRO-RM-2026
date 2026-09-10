@@ -174,16 +174,26 @@ class BufferFrame:
     def __init__(self):
         self.lock = threading.Lock()
         self.jpeg = None
+        self.raw_jpeg = None
 
-    def set(self, frame):
+    def set(self, frame, frame_raw=None):
         ok, buf = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 60])
         if ok:
             with self.lock:
                 self.jpeg = buf.tobytes()
+        if frame_raw is not None:
+            ok_r, buf_r = cv2.imencode(".jpg", frame_raw, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
+            if ok_r:
+                with self.lock:
+                    self.raw_jpeg = buf_r.tobytes()
 
     def get(self):
         with self.lock:
             return self.jpeg
+
+    def get_raw(self):
+        with self.lock:
+            return self.raw_jpeg
 
 
 class RegistroTelemetria:
@@ -242,8 +252,9 @@ class RegistroTelemetria:
                 pass
 
 
-def arrancar_web(buffer_frame, telemetria, estado_global, puerto=8080):
+def arrancar_web(buffer_frame, telemetria, estado_global, puerto=8080, callback_modo=None):
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from urllib.parse import parse_qs, urlparse
 
     PAGINA = (b"<!DOCTYPE html><html><head><meta charset='utf-8'><title>WRO Vision & Telemetria</title>"
               b"<style>body{background:#18181b;color:#f4f4f5;font-family:ui-monospace,monospace;margin:0;padding:15px;text-align:center}"
@@ -257,8 +268,14 @@ def arrancar_web(buffer_frame, telemetria, estado_global, puerto=8080):
               b"<img src='/stream'>"
               b"<div class='panel'>"
               b"<div><span class='tag'>STREAM</span> <a href='/stream' target='_blank' style='color:#38bdf8'>/stream</a> | "
+              b"<span class='tag'>RAW</span> <a href='/raw' target='_blank' style='color:#a78bfa'>/raw</a> | "
               b"<span class='tag'>TELEMETRIA</span> <a href='/telemetria' target='_blank' style='color:#4ade80'>/telemetria (JSON)</a> | "
               b"<span class='tag'>ESTADO</span> <a href='/estado' target='_blank' style='color:#fbbf24'>/estado</a></div>"
+              b"<div style='margin-top:8px;'><span class='tag'>MODO</span> "
+              b"<a href='/modo?m=PAUSA' style='color:#a1a1aa'>PAUSA</a> | "
+              b"<a href='/modo?m=ARTEFACTO&c=AUTO' style='color:#38bdf8'>AUTO</a> | "
+              b"<a href='/modo?m=TORRE_REC' style='color:#facc15;font-weight:bold'>TORRE_REC</a> | "
+              b"<a href='/modo?m=TORRE_DEST' style='color:#f97316;font-weight:bold'>TORRE_DEST</a></div>"
               b"<div id='logs'>Cargando telemetria en vivo...</div>"
               b"</div></div>"
               b"<script>"
@@ -291,6 +308,27 @@ def arrancar_web(buffer_frame, telemetria, estado_global, puerto=8080):
                 except (BrokenPipeError, ConnectionResetError):
                     pass
 
+            elif self.path == "/raw":
+                self.send_response(200)
+                self.send_header("Content-Type", "image/jpeg")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                raw = buffer_frame.get_raw()
+                if raw:
+                    self.wfile.write(raw)
+
+            elif self.path.startswith("/modo"):
+                qs = parse_qs(urlparse(self.path).query)
+                m = qs.get("m", [None])[0]
+                c = qs.get("c", [None])[0]
+                if m and callback_modo:
+                    callback_modo(m, c)
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                self.wfile.write(json.dumps(estado_global, ensure_ascii=False).encode("utf-8"))
+
             elif self.path == "/telemetria":
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -319,6 +357,7 @@ def arrancar_web(buffer_frame, telemetria, estado_global, puerto=8080):
             else:
                 self.send_response(200)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Access-Control-Allow-Origin", "*")
                 self.end_headers()
                 self.wfile.write(PAGINA)
 
@@ -386,9 +425,23 @@ def main():
     }
 
     buffer_frame = None
+    def set_modo(nuevo_m, nuevo_c=None):
+        nonlocal modo, color
+        m = nuevo_m.upper()
+        if m in ("PAUSA", "FILA", "TORRE_REC", "TORRE_DEST"):
+            modo = m
+            color = m
+        elif m in ("ARTEFACTO", "DESTINO"):
+            modo = m
+            if nuevo_c:
+                color = nuevo_c.upper()
+        estado_global["modo"] = modo
+        estado_global["color_actual"] = color
+        log("modo cambiado -> %s %s" % (modo, color))
+
     if habilitar_web:
         buffer_frame = BufferFrame()
-        arrancar_web(buffer_frame, telemetria, estado_global, puerto_web)
+        arrancar_web(buffer_frame, telemetria, estado_global, puerto_web, callback_modo=set_modo)
         log("servidor web y telemetria en http://<ip-de-la-pi>:%d" % puerto_web)
 
     fps = ContadorFPS()
@@ -409,6 +462,14 @@ def main():
             roi_y0 = 0
             if frame is None:
                 f = fps.fps
+            elif modo == "TORRE_REC":
+                det, _mask, roi_y0 = detector.detectar_torre_recolectar(frame)
+                color_detectado = "TORRE_REC"
+                f = fps.tick()
+            elif modo == "TORRE_DEST":
+                det, _mask, roi_y0 = detector.detectar_torre_destino(frame)
+                color_detectado = "TORRE_DEST"
+                f = fps.tick()
             elif modo == "ARTEFACTO" and color == "AUTO":
                 det, color_detectado, _mask, roi_y0 = detector.detectar_auto(frame)
                 f = fps.tick()
@@ -468,7 +529,12 @@ def main():
 
                     if cmd == "C" and len(partes) >= 2:
                         nuevo = partes[1].upper()
-                        if nuevo in disponibles or nuevo == "AUTO":
+                        if nuevo in ("TORRE_REC", "TORRE_DEST"):
+                            modo = nuevo
+                            color = nuevo
+                            log("modo -> %s" % modo)
+                            enlace.enviar("K COLOR %s" % color)
+                        elif nuevo in disponibles or nuevo == "AUTO":
                             color = nuevo
                             modo = "ARTEFACTO"
                             log("modo -> ARTEFACTO %s" % color)
@@ -478,12 +544,15 @@ def main():
                     elif cmd == "M" and len(partes) >= 2:
                         nuevo_modo = partes[1].upper()
                         nuevo_color = partes[2].upper() if len(partes) >= 3 else color
-                        valido = nuevo_modo in ("PAUSA", "FILA") or (
+                        valido = nuevo_modo in ("PAUSA", "FILA", "TORRE_REC", "TORRE_DEST") or (
                             nuevo_modo in ("ARTEFACTO", "DESTINO") and
                             nuevo_color in disponibles + (["AUTO"] if nuevo_modo == "ARTEFACTO" else []))
                         if valido:
                             modo = nuevo_modo
-                            color = nuevo_color
+                            if nuevo_modo in ("TORRE_REC", "TORRE_DEST"):
+                                color = nuevo_modo
+                            else:
+                                color = nuevo_color
                             log("modo -> %s %s" % (modo, color))
                             enlace.enviar("K MODO %s %s" % (modo, color))
                         else:
@@ -505,13 +574,13 @@ def main():
                         estado_global["enviando"] = enviando
                         enlace.enviar("K STREAM %d" % (1 if enviando else 0))
                     elif cmd == "P":
-                        enlace.enviar("K %s MODOS=PAUSA,ARTEFACTO,FILA,DESTINO COLORES=AUTO,%s" %
+                        enlace.enviar("K %s MODOS=PAUSA,ARTEFACTO,FILA,DESTINO,TORRE_REC,TORRE_DEST COLORES=AUTO,%s" %
                                       (VERSION, ",".join(disponibles)))
 
             if buffer_frame is not None and frame is not None:
                 etiqueta = "%s/%s" % (modo, color_detectado if color == "AUTO" else color)
                 buffer_frame.set(dibujar_overlay(frame.copy(), det, etiqueta, f,
-                                                 roi_y0, detector.cx_garra))
+                                                 roi_y0, detector.cx_garra), frame)
 
     except KeyboardInterrupt:
         log("detenido por el usuario")

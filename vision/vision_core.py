@@ -912,6 +912,235 @@ class Detector:
         ds = np.array([p[1] for p in tabla], dtype=np.float32)
         return int(np.interp(float(y_base), ys, ds))
 
+    def distancia_torre_mm(self, y_base, tipo="recolectar"):
+        torres_cfg = self.cfg.get("torres", {})
+        sub_cfg = torres_cfg.get(tipo, {})
+        tabla = sub_cfg.get("tabla_distancia", [])
+        if len(tabla) < 2:
+            return self.distancia_mm(y_base)
+        tabla = sorted(tabla, key=lambda p: p[0])
+        ys = np.array([p[0] for p in tabla], dtype=np.float32)
+        ds = np.array([p[1] for p in tabla], dtype=np.float32)
+        return int(np.interp(float(y_base), ys, ds))
+
+    def detectar_torre_recolectar(self, frame):
+        """Detecta la torre a recolectar (cuerpo amarillo + corona blanca abierta)."""
+        torres_cfg = self.cfg.get("torres", {})
+        rec_cfg = torres_cfg.get("recolectar", {})
+        cx_garra = torres_cfg.get("cx_garra", self.cx_garra)
+        roi_frac = rec_cfg.get("roi_y", [0.08, 0.95])
+        area_min = rec_cfg.get("area_min_px", 300)
+        area_max = rec_cfg.get("area_max_px", 15000)
+        aspecto_max = rec_cfg.get("relacion_aspecto_max", 3.0)
+
+        alto, ancho = frame.shape[:2]
+        y0 = int(alto * roi_frac[0])
+        y1 = int(alto * roi_frac[1])
+        roi = frame[y0:y1]
+        hsv_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+
+        # 1. Mascara de amarillo del cuerpo
+        rangos_y = rec_cfg.get("amarillo", [[22, 160, 50, 48, 255, 255]])
+        mask_y = np.zeros(hsv_roi.shape[:2], dtype=np.uint8)
+        for r in rangos_y:
+            mask_y |= cv2.inRange(hsv_roi, np.array(r[0:3], dtype=np.uint8), np.array(r[3:6], dtype=np.uint8))
+
+        # 2. Mascara de blanco de la corona
+        rangos_w = rec_cfg.get("blanco_corona", [[0, 0, 90, 179, 130, 255]])
+        mask_w = np.zeros(hsv_roi.shape[:2], dtype=np.uint8)
+        for r in rangos_w:
+            mask_w |= cv2.inRange(hsv_roi, np.array(r[0:3], dtype=np.uint8), np.array(r[3:6], dtype=np.uint8))
+
+        # 3. Mascara de negro para descarte
+        mask_b = cv2.inRange(hsv_roi, np.array([0, 0, 0], dtype=np.uint8), np.array([179, 255, 75], dtype=np.uint8))
+
+        # Anular zonas ignoradas (dedos de la garra)
+        for zona in self.zonas_ignoradas:
+            if len(zona) == 4:
+                zx0 = max(0, min(ancho, int(float(zona[0]) * ancho)))
+                zx1 = max(0, min(ancho, int(float(zona[2]) * ancho)))
+                zy0 = max(y0, min(y1, int(float(zona[1]) * alto))) - y0
+                zy1 = max(y0, min(y1, int(float(zona[3]) * alto))) - y0
+                if zx1 > zx0 and zy1 > zy0:
+                    mask_y[zy0:zy1, zx0:zx1] = 0
+                    mask_w[zy0:zy1, zx0:zx1] = 0
+
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+        mask_y = cv2.morphologyEx(mask_y, cv2.MORPH_OPEN, kernel)
+        mask_y = cv2.morphologyEx(mask_y, cv2.MORPH_CLOSE, kernel)
+        mask_w = cv2.morphologyEx(mask_w, cv2.MORPH_OPEN, kernel)
+
+        contornos_y = cv2.findContours(mask_y, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)[-2]
+        candidatos = []
+
+        for c in contornos_y:
+            area = cv2.contourArea(c)
+            if area < area_min or area > area_max:
+                continue
+            x, y, w, h = cv2.boundingRect(c)
+            # Descartar tiras gigantes del suelo
+            if w == 0 or h < 15 or w > 190:
+                continue
+            aspecto = max(w / float(h), h / float(w))
+            if aspecto > aspecto_max:
+                continue
+
+            top_y0 = max(0, y - int(h * 1.2))
+            top_y1 = y + int(h * 0.15)
+            top_x0 = max(0, x - 10)
+            top_x1 = min(roi.shape[1], x + w + 10)
+
+            roi_blanco = mask_w[top_y0:top_y1, top_x0:top_x1]
+            blanco_px = cv2.countNonZero(roi_blanco)
+            roi_negro = mask_b[top_y0:top_y1, top_x0:top_x1]
+            negro_px = cv2.countNonZero(roi_negro)
+
+            # Torre a recolectar debe tener corona blanca destacada y no ser dominada por negro
+            tiene_corona = (blanco_px > 1200) and (blanco_px > negro_px * 1.5)
+
+            y_base = y + h + y0
+            cx = x + w // 2
+            cy = y + h // 2 + y0
+            ex = cx - cx_garra
+
+            d = Deteccion()
+            d.encontrado = True
+            d.color = "TORRE_REC"
+            d.cx = cx
+            d.cy = cy
+            d.y_base = y_base
+            d.w, d.h = w, h + (y - top_y0 if tiene_corona else 0)
+            d.area = int(area + blanco_px)
+            d.ex = ex
+            d.ey = y_base
+            d.dist_mm = self.distancia_torre_mm(y_base, "recolectar")
+
+            q_corona = 1.0 if tiene_corona else 0.1
+            q_dist = min(1.0, y_base / float(alto))
+            q_centro = max(0.0, 1.0 - abs(ex) / (ancho / 2.0))
+            d.confianza = int(round(100.0 * (0.60 * q_corona + 0.25 * q_dist + 0.15 * q_centro)))
+            candidatos.append((d, tiene_corona, blanco_px))
+
+        if candidatos:
+            candidatos.sort(key=lambda item: (1 if item[1] else 0, item[0].confianza), reverse=True)
+            mejor = candidatos[0][0]
+        else:
+            mejor = Deteccion()
+
+        mask_comb = cv2.bitwise_or(mask_y, mask_w)
+        return mejor, mask_comb, y0
+
+    def detectar_torre_destino(self, frame):
+        """Detecta la torre de destino (cuerpo amarillo + tapa negra con marco)."""
+        torres_cfg = self.cfg.get("torres", {})
+        dest_cfg = torres_cfg.get("destino", {})
+        cx_garra = torres_cfg.get("cx_garra", self.cx_garra)
+        roi_frac = dest_cfg.get("roi_y", [0.05, 0.90])
+        area_min = dest_cfg.get("area_min_px", 250)
+        area_max = dest_cfg.get("area_max_px", 15000)
+        aspecto_max = dest_cfg.get("relacion_aspecto_max", 3.0)
+
+        alto, ancho = frame.shape[:2]
+        y0 = int(alto * roi_frac[0])
+        y1 = int(alto * roi_frac[1])
+        roi = frame[y0:y1]
+        hsv_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+
+        # 1. Mascara de amarillo del cuerpo
+        rangos_y = dest_cfg.get("amarillo", [[18, 205, 25, 29, 255, 255]])
+        mask_y = np.zeros(hsv_roi.shape[:2], dtype=np.uint8)
+        for r in rangos_y:
+            mask_y |= cv2.inRange(hsv_roi, np.array(r[0:3], dtype=np.uint8), np.array(r[3:6], dtype=np.uint8))
+
+        # 2. Mascara de negro de la cabeza
+        rangos_n = dest_cfg.get("negro_cabeza", [[0, 0, 0, 179, 255, 60]])
+        mask_n = np.zeros(hsv_roi.shape[:2], dtype=np.uint8)
+        for r in rangos_n:
+            mask_n |= cv2.inRange(hsv_roi, np.array(r[0:3], dtype=np.uint8), np.array(r[3:6], dtype=np.uint8))
+
+        # 3. Mascara de blanco de referencia
+        rangos_w = torres_cfg.get("recolectar", {}).get("blanco_corona", [[0, 0, 80, 179, 115, 255]])
+        mask_w = np.zeros(hsv_roi.shape[:2], dtype=np.uint8)
+        for r in rangos_w:
+            mask_w |= cv2.inRange(hsv_roi, np.array(r[0:3], dtype=np.uint8), np.array(r[3:6], dtype=np.uint8))
+
+        # Anular zonas ignoradas
+        for zona in self.zonas_ignoradas:
+            if len(zona) == 4:
+                zx0 = max(0, min(ancho, int(float(zona[0]) * ancho)))
+                zx1 = max(0, min(ancho, int(float(zona[2]) * ancho)))
+                zy0 = max(y0, min(y1, int(float(zona[1]) * alto))) - y0
+                zy1 = max(y0, min(y1, int(float(zona[3]) * alto))) - y0
+                if zx1 > zx0 and zy1 > zy0:
+                    mask_y[zy0:zy1, zx0:zx1] = 0
+                    mask_n[zy0:zy1, zx0:zx1] = 0
+                    mask_w[zy0:zy1, zx0:zx1] = 0
+
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+        mask_y = cv2.morphologyEx(mask_y, cv2.MORPH_OPEN, kernel)
+        mask_y = cv2.morphologyEx(mask_y, cv2.MORPH_CLOSE, kernel)
+        mask_n = cv2.morphologyEx(mask_n, cv2.MORPH_OPEN, kernel)
+        mask_w = cv2.morphologyEx(mask_w, cv2.MORPH_OPEN, kernel)
+
+        contornos_y = cv2.findContours(mask_y, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)[-2]
+        candidatos = []
+
+        for c in contornos_y:
+            area = cv2.contourArea(c)
+            if area < area_min or area > area_max:
+                continue
+            x, y, w, h = cv2.boundingRect(c)
+            if w == 0 or h < 15 or w > 190:
+                continue
+            aspecto = max(w / float(h), h / float(w))
+            if aspecto > aspecto_max:
+                continue
+
+            top_y0 = max(0, y - int(h * 1.2))
+            top_y1 = y + int(h * 0.15)
+            top_x0 = max(0, x - 10)
+            top_x1 = min(roi.shape[1], x + w + 10)
+
+            roi_negro = mask_n[top_y0:top_y1, top_x0:top_x1]
+            negro_px = cv2.countNonZero(roi_negro)
+            roi_blanco = mask_w[top_y0:top_y1, top_x0:top_x1]
+            blanco_px = cv2.countNonZero(roi_blanco)
+
+            # Torre de destino tiene tapa negra y no corona abierta gigante
+            tiene_tapa_negra = (negro_px > 800) and (blanco_px < 3500)
+
+            y_base = y + h + y0
+            cx = x + w // 2
+            cy = y + h // 2 + y0
+            ex = cx - cx_garra
+
+            d = Deteccion()
+            d.encontrado = True
+            d.color = "TORRE_DEST"
+            d.cx = cx
+            d.cy = cy
+            d.y_base = y_base
+            d.w, d.h = w, h + (y - top_y0 if tiene_tapa_negra else 0)
+            d.area = int(area + negro_px)
+            d.ex = ex
+            d.ey = y_base
+            d.dist_mm = self.distancia_torre_mm(y_base, "destino")
+
+            q_negro = 1.0 if tiene_tapa_negra else 0.1
+            q_dist = min(1.0, y_base / float(alto))
+            q_centro = max(0.0, 1.0 - abs(ex) / (ancho / 2.0))
+            d.confianza = int(round(100.0 * (0.60 * q_negro + 0.25 * q_dist + 0.15 * q_centro)))
+            candidatos.append((d, tiene_tapa_negra, negro_px))
+
+        if candidatos:
+            candidatos.sort(key=lambda item: (1 if item[1] else 0, item[0].confianza), reverse=True)
+            mejor = candidatos[0][0]
+        else:
+            mejor = Deteccion()
+
+        mask_comb = cv2.bitwise_or(mask_y, mask_n)
+        return mejor, mask_comb, y0
+
 
 # ---------------------------------------------------------------------------
 # Overlay de depuracion
