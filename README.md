@@ -204,7 +204,7 @@ python herramientas/analizar_sesion.py --ultima
 ```
 
 Consulta [`herramientas/README.md`](herramientas/README.md) para ver todos los
-comandos y archivos producidos.
+comandos y archivos producidos, y el [**Manual de Guía Rápida de Comandos**](MANUAL_COMANDOS_WRO_2026.md) para la referencia completa de comandos en la Raspberry Pi y competencia.
 
 ## Seguridad y competencia
 
