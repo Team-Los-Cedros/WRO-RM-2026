@@ -156,12 +156,12 @@ class DetectorTest(unittest.TestCase):
 
     def test_destino_alineacion_con_vecinos(self):
         # Simular expositores de museo: VERDE (izq), NEGRO (centro), AZUL (der)
-        frame = np.full((self.alto, self.ancho, 3), 80, dtype=np.uint8)
+        frame = np.full((self.alto, self.ancho, 3), 160, dtype=np.uint8)
         y0, y1 = 110, 170
 
         # VERDE (izquierda)
         cv2.rectangle(frame, (140, 85), (230, 195), (245, 245, 245), -1)
-        cv2.rectangle(frame, (150, y0), (220, y1), (0, 180, 0), -1)
+        cv2.rectangle(frame, (150, y0), (220, y1), (0, 100, 0), -1)
 
         # NEGRO (centro)
         cv2.rectangle(frame, (275, 85), (365, 195), (245, 245, 245), -1)
