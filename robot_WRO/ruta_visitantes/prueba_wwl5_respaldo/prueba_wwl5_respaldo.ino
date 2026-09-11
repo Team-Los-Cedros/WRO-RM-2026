@@ -963,7 +963,7 @@ void loop() {
   retroceder(400, 25, 4.5);
 
   girarIzquierdaGyro(84.0, 35.0);
-  avanzarRectoGyro(1105, 165, 6.0, 4.5);
+  avanzarRectoGyro(1157, 150, 6.0, 4.5);
   _delay(1.0);
   avanzarRectoGyroLineaPerpendicular(730, 45, 10.0, 90, 4);
   _delay(0.5);
@@ -971,7 +971,7 @@ void loop() {
   // Estos dos giros de 90 se podrian unir en girarIzquierdaGyro(180.0, 50.0)
   // si la pausa de en medio no te hace falta. Los dejo tal cual por si la necesitas. 
   girarIzquierdaGyro(175.0, 30.0);
-  avanzarRectoGyro(225, 45, 6.0, 1.5);
+  avanzarRectoGyro(205, 45, 6.0, 1.5);
   recolectar(1);
   //Separar el rojo
   retroceder(200, 25, 2.5);
@@ -1009,7 +1009,7 @@ void loop() {
   girarDerechaGyro(5.0, 15.0);
   recolectar(1);
   //Ir y centrar en linea 
-  avanzarRectoGyro(175, 195, 3.5, 2.5);
+  avanzarRectoGyro(160, 195, 3.5, 2.5);
   _delay(0.5);
   avanzarRectoGyroLineaPerpendicular(390, 35, 10.0, 40, 2, 30, 2, 0);
 
@@ -1023,10 +1023,13 @@ void loop() {
 
   //Recolectar
   bajar_pala();
-  avanzar(260, 30, 3.5);
+  avanzar(250, 30, 3.5);
   cerrarGarra();
   recolectar(4);
   retroceder(110, 15, 2.8);
+  abrirGarra();
+  avanzar(45, 65, 1.0);
+  cerrarGarra();
  /* abrirGarra();
   avanzar(100, 65, 1.0);
   cerrarGarra();*/
@@ -1040,9 +1043,9 @@ void loop() {
   retroceder(110, 25, 3.8);
 
   girarDerechaGyro(25.0, 50.0);
-  avanzarRectoGyro(227, 207, 22.5, 1.5);
-   girarDerechaGyro(75.0, 50.0);
-   recolectar(2);
+  avanzarRectoGyro(590, 207, 22.5, 1.5);
+  recolectar(2);
+   girarDerechaGyro(75.0, 50.0); 
    parabrisas(550);
   /*
   girarIzquierdaGyro(85.0, 50.0);

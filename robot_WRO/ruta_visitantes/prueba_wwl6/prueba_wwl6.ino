@@ -42,6 +42,137 @@ void isr_process_encoder2(void){
 // Variable para saber si estamos en espera o si el robot ya está compitiendo
 bool rutinaIniciada = false;
 
+void _loop();
+void _delay(float seconds);
+
+// =========================================================================
+// PROTOCOLO DE VISION PARA TORRES WRO 2026 (Raspberry Pi <-> MegaPi)
+// =========================================================================
+struct VisionData {
+  bool encontrado;
+  char modo[16];
+  int ex;
+  int ey;
+  long area;
+  int dist;
+  int fps;
+  int confianza;
+  unsigned long tRecepcion;
+  unsigned long secuencia;
+};
+
+VisionData vision = {false, "", 0, 0, 0, -1, 0, 0, 0, 0};
+char bufVision[64];
+byte idxVision = 0;
+
+void visionProcesarLinea(char* linea) {
+  if (linea[0] != 'T' || linea[1] != ' ') return;
+  char* tok = strtok(linea + 2, " ");
+  if (!tok) return;
+  bool enc = atoi(tok) != 0;
+  tok = strtok(NULL, " ");
+  if (!tok) return;
+  strncpy(vision.modo, tok, sizeof(vision.modo) - 1);
+  tok = strtok(NULL, " "); if (!tok) return; int ex = atoi(tok);
+  tok = strtok(NULL, " "); if (!tok) return; int ey = atoi(tok);
+  tok = strtok(NULL, " "); if (!tok) return; long area = atol(tok);
+  tok = strtok(NULL, " "); if (!tok) return; int dist = atoi(tok);
+  tok = strtok(NULL, " "); int fps = tok ? atoi(tok) : 0;
+  tok = strtok(NULL, " "); int conf = tok ? atoi(tok) : 0;
+
+  vision.encontrado = enc;
+  vision.ex = ex;
+  vision.ey = ey;
+  vision.area = area;
+  vision.dist = dist;
+  vision.fps = fps;
+  vision.confianza = conf;
+  vision.tRecepcion = millis();
+  vision.secuencia++;
+}
+
+void visionActualizar() {
+  while (Serial.available()) {
+    char c = Serial.read();
+    if (c == '\n' || c == '\r') {
+      if (idxVision > 0) {
+        bufVision[idxVision] = '\0';
+        visionProcesarLinea(bufVision);
+        idxVision = 0;
+      }
+    } else if (idxVision < sizeof(bufVision) - 1) {
+      bufVision[idxVision++] = c;
+    } else {
+      idxVision = 0;
+    }
+  }
+}
+
+void visionPedirModo(const char* m) {
+  Serial.print("M ");
+  Serial.println(m);
+  vision.encontrado = false;
+  vision.tRecepcion = 0;
+}
+
+void visionPausar() {
+  Serial.println("M PAUSA");
+  vision.encontrado = false;
+  vision.tRecepcion = 0;
+}
+
+bool visionVeObjeto(unsigned long msMax = 350) {
+  return (vision.tRecepcion != 0 && (millis() - vision.tRecepcion < msMax) && vision.encontrado);
+}
+
+// Centrado proporcional rapido (< 1.5s)
+bool visionCentrarRapido(float timeoutSeg = 1.8, int toleranciaPx = 8) {
+  unsigned long inicio = millis();
+  unsigned long timeoutMs = (unsigned long)(timeoutSeg * 1000.0);
+  int consecutivos = 0;
+
+  while (millis() - inicio < timeoutMs) {
+    _loop();
+    if (!visionVeObjeto(300)) {
+      Encoder_1.runSpeed(0);
+      Encoder_2.runSpeed(0);
+      delay(2);
+      continue;
+    }
+
+    if (abs(vision.ex) <= toleranciaPx) {
+      Encoder_1.runSpeed(0);
+      Encoder_2.runSpeed(0);
+      if (++consecutivos >= 2) {
+        _delay(0.04);
+        return true;
+      }
+    } else {
+      consecutivos = 0;
+      float v = fabs(vision.ex) * 0.42;
+      if (v < 18.0) v = 18.0;
+      if (v > 42.0) v = 42.0;
+
+      if (vision.ex > 0) {
+        // Objeto a la derecha -> girar derecha
+        Encoder_1.runSpeed(-v);
+        Encoder_2.runSpeed(-v);
+      } else {
+        // Objeto a la izquierda -> girar izquierda
+        Encoder_1.runSpeed(v);
+        Encoder_2.runSpeed(v);
+      }
+    }
+    delay(4);
+  }
+
+  Encoder_1.runSpeed(0);
+  Encoder_2.runSpeed(0);
+  _delay(0.04);
+  return (consecutivos > 0);
+}
+
+
 void _loop() {
   unsigned long tiempoActual = millis(); 
   
@@ -50,6 +181,7 @@ void _loop() {
   if(tiempoActual - ultimoTiempoMotores >= 10) {
     Encoder_1.loop();
     Encoder_2.loop();
+    visionActualizar();
     ultimoTiempoMotores = tiempoActual;
   }
   
@@ -953,117 +1085,76 @@ void loop() {
   // TU RUTINA DE MOVIMIENTO (sin cambios)
   // ==========================================
 
-/* --- colores no aleatorios ---*/
-  girarDerechaGyro(85.0, 20.0);
-  avanzarRectoGyro(202, 50, 1.5, 2.5);
-  girarIzquierdaGyro(85.0, 20.0);
- 
-  avanzarRectoGyro(742, 50, 1.5, 6.5);
-  recolectar(2);
-  retroceder(400, 25, 4.5);
+      /*avanzarRectoGyro(430, 50, 1.5, 2.5);
+      girarIzquierdaGyro(85.0, 35.0);
+      recolectar(3);
+      avanzarRectoGyro(346, 80, 1.5, 2.5);
+      cerrarGarra();
+*/
 
-  girarIzquierdaGyro(84.0, 35.0);
-  avanzarRectoGyro(1105, 165, 6.0, 4.5);
-  _delay(1.0);
-  avanzarRectoGyroLineaPerpendicular(730, 45, 10.0, 90, 4);
-  _delay(0.5);
+girarIzquierdaGyro(85.0, 95.0);
+avanzarRectoGyro(100, 90, 1.5, 0.5);
+girarDerechaGyro(85.0, 95.0);
 
-  // Estos dos giros de 90 se podrian unir en girarIzquierdaGyro(180.0, 50.0)
-  // si la pausa de en medio no te hace falta. Los dejo tal cual por si la necesitas. 
-  girarIzquierdaGyro(175.0, 30.0);
-  avanzarRectoGyro(225, 45, 6.0, 1.5);
-  recolectar(1);
-  //Separar el rojo
-  retroceder(200, 25, 2.5);
-  girarDerechaGyro(30.0, 40.0);
-  avanzar(366, 40, 3.5);
-  recolectar(2);
-  girarDerechaGyro(50.0, 40.0);
-  //Empujar a la zona
-  avanzar(810, 125, 3.0);
-  recolectar(1);
-  avanzar(55, 90, 1.85);
+avanzar(605, 105, 2.2);
 
-  retroceder(750, 85, 3.5);
-
-  // ---- ESTE ERA EL GIRO QUE FALLABA (cruzaba el +-180) ----
-  // Voltear hacia el verde
-  recolectar(2);
-  girarIzquierdaGyro(160.0, 32.0);
-  avanzar(505, 145, 2.85); 
-  //Acomodar el verde si queda fuera
-  recolectar(3);
-  servoGarra2.write(GARRA_CERRADA_S2);
-  girarIzquierdaGyro(35.0, 40.0);
-  abrirGarra();
-  avanzar(45, 60, 1.5);
-  
-
-  //---TORRES AMARILLAS---
-
-  //Retroceder y Girar hacia la línea
-  retroceder(100, 65, 1.5);
-  retroceder(870, 220, 2.5);
-  girarDerechaGyro(99.0, 30.0);
-  _delay(1.0);
-  girarDerechaGyro(5.0, 15.0);
-  recolectar(1);
-  //Ir y centrar en linea 
-  avanzarRectoGyro(175, 195, 3.5, 2.5);
-  _delay(0.5);
-  avanzarRectoGyroLineaPerpendicular(390, 35, 10.0, 40, 2, 30, 2, 0);
-
-  //Ir a la AMARILLA
-  avanzar(315, 78, 2.6);
-  girarDerechaGyro(89.5, 30.0);
-  _delay(0.5);
-  /*avanzar(95, 155, 1.0);
-  avanzarRectoGyroLineaPerpendicular(120, 25, 8.5, 30, 2, 10, 2, 15);
-  retroceder(200, 25, 1.8)*/
-
-  //Recolectar
+// =========================================================================
+  // FASE 1: CENTRADO Y RECOLECCION VISUAL AGIL DE LA TORRE
+  // =========================================================================
   bajar_pala();
-  avanzar(260, 30, 3.5);
+  visionPedirModo("TORRE_REC");
+  _delay(0.15);
+
+  // Centrado rapido proporcional hacia la torre amarilla con corona blanca
+  visionCentrarRapido(1.8, 8);
+
+  // Avance recto y captura precisa de la torre
+  avanzar(265, 45, 2.2);
   cerrarGarra();
   recolectar(4);
-  retroceder(110, 15, 2.8);
- /* abrirGarra();
-  avanzar(100, 65, 1.0);
-  cerrarGarra();*/
-  
-  //Ir a llevar la torre
-  retroceder(31, 35, 1.5);
+  _delay(0.4);
+  retroceder(115, 35, 1.5);
+  visionPausar();
+
+  // =========================================================================
+  // FASE 2: TRANSPORTE Y ALINEACION PREVIA DEL DESTINO (ANTES DEL PUNTO CIEGO)
+  // =========================================================================
+  retroceder(31, 35, 1.0);
   girarDerechaGyro(87.0, 30.0);
-  recolectar(1);
-  avanzarRectoGyro(2027, 207, 22.5, 7.5);
+  recolectar(1); // Posicion elevada de transporte
+  _delay(0.3);
+
+  // Distancia total aproximada al destino: 2027 ticks.
+  // Tramo 1: Avance intermedio (~1450 ticks) donde la torre destino todavia es visible
+  const long DIST_TOTAL_DESTINO = 2027;
+  const long DIST_INTERMEDIA = 1450;
+  const long DIST_FINAL = DIST_TOTAL_DESTINO - DIST_INTERMEDIA;
+
+  avanzarRectoGyro(DIST_INTERMEDIA, 210, 2.5, 4.5);
+  detener(0.1);
+
+  // Parada estrategica: la camara ubica la torre destino (amarilla con tapa negra)
+  visionPedirModo("TORRE_DEST");
+  _delay(0.18);
+  // Micro-centrado angular exacto (ex -> 0)
+  visionCentrarRapido(1.6, 6);
+  visionPausar();
+
+  // Tramo 2: Avance recto final con giroscopio (en el punto ciego de la pala)
+  avanzarRectoGyro(DIST_FINAL, 90, 2.0, 2.8);
+  detener(0.2);
+
+  // Depositar la torre con precision sobre el pedestal
   depositar();
-  retroceder(110, 25, 3.8);
+  retroceder(110, 35, 2.2);
 
   girarDerechaGyro(25.0, 50.0);
   avanzarRectoGyro(227, 207, 22.5, 1.5);
    girarDerechaGyro(75.0, 50.0);
    recolectar(2);
    parabrisas(550);
-  /*
-  girarIzquierdaGyro(85.0, 50.0);
 
-  //Recolectar el azul y negro
-  avanzar(460, 60, 3.5);
-  recolectar(2);
-  retroceder(860, 75, 6.5);
- //Ir hacia las zonas del final
- girarIzquierdaGyro(77.0, 30.0);
- avanzar(2500, 245, 6.5);
- recolectar(1);
- //Separa el negro
- retroceder(200, 25, 4.5);
- girarIzquierdaGyro(25.0, 50.0);
- avanzar(300, 60, 3.5);
 
- recolectar(2);
- parabrisas(550);
-
-*/
   detener(1.0);
   // Bucle infinito para que no repita la rutina en la competencia
   while(1) {
