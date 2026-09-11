@@ -1390,8 +1390,8 @@ void bajar_pala(void)
 void barrer(void)
 {
   abrirGarra();
-  miServo.write(117);
-  _delay(1.0);
+  miServo.write(122.5);
+  _delay(0.5);
 }
 
 void recolectar(int modo)
@@ -1881,6 +1881,9 @@ void setup()
 void loop()
 {
   Serial.println(F("# Listo. Pulsa el boton."));
+  servoGarra2.write(GARRA_CERRADA_S2);
+  _delay(0.25);
+  servoGarra2.write(GARRA_ABIERTA_S2);
 
 #if MODO_CALIBRAR_VISION
   calibrarVision();
@@ -1906,9 +1909,9 @@ void loop()
 
   // ---- 1. Ponerse frente a la torre amarilla ----
   girarIzquierdaGyro(90.0, V_GIRO);             // (izq 85 a 95 rpm)
-  avanzar(100, V_RECTO_MEDIO, 3.0);             // (100)
+  avanzar(180, V_RECTO_MEDIO, 3.0);             // (100)
   girarARumbo(0.0, V_GIRO);                     // de frente otra vez, como arranco (der 85)
-  avanzar(605, V_RECTO, 6.0);                   // (605)
+  avanzar(410, V_RECTO, 6.0);                   // (605)
 
   // ---- 2. Recoger la parte superior de la torre ----
   bajar_pala();                                 // 105: garra abierta a ras del suelo
@@ -1918,26 +1921,30 @@ void loop()
   recolectar(4);                                // 95 = PALA_VER_DESTINO: la levanta un poco
   // Si queda torcida en la garra, re-agarrarla como en prueba_wwl5_opt:
   // retroceder(110, V_APROX, 4.0); abrirGarra(); avanzar(45, V_APROX, 2.5); cerrarGarra();
-  retroceder(146, V_APROX, 4.0);                // (115 + 31)
+  retroceder(91, V_APROX, 4.0);                // (115 + 31)
 
   // ---- 3. Llevarla hasta la base y colocarla encima ----
   girarARumbo(-90.0, V_GIRO_FINO);              // a la derecha de como arranco (der 87 a 30 rpm)
   // Se lleva BAJA (pala en 95): asi la camara ve la base por encima de la torre.
-  avanzar(1450, V_RECTO_RAPIDO, 10.0);          // (1450) hasta donde todavia se ve la base
+  avanzar(1455, V_RECTO_RAPIDO, 10.0);          // (1450) hasta donde todavia se ve la base
   visionCentrar("TORRE_DEST");                  // LA CAMARA corrige el rumbo mirando la base
-  long falta = visionDistancia(2087 - 1450);    // 2087 = tramo completo medido en wwl5_opt
+  long falta = visionDistancia(2242 - 1455);    // 2087 = tramo completo medido en wwl5_opt
   recolectar(1);                                // 63: la sube por encima de la base
   avanzar(falta, V_APROX, 5.0);
   colocarSobreBase();                           // baja despacio, suelta, retrocede recto y sube la pala
   visionPausar();
 
   // ---- 4. Barrer ----
-  girarARumbo(-115.0, V_GIRO);                  // (der 25)
-  avanzar(227, V_RECTO, 4.0);                   // (227 a 207 rpm: la funcion vieja se pasaba
+  girarARumbo(-190.0, V_GIRO);                  // (der 25) era -115
+  avanzar(437, V_RECTO_RAPIDO, 4.0);                   // (227 a 207 rpm: la funcion vieja se pasaba
                                                 //  al frenar; en wwl5_opt este tramo es 590)
-  girarARumbo(-190.0, V_GIRO);                  // (der 75)
+  girarARumbo(-88.0, V_GIRO);                  // (der 75) era -190
+  avanzar(837, V_RECTO_RAPIDO, 4.0);
   recolectar(2);
-  parabrisas(550, V_RECTO_MEDIO);               // (550)
+  girarARumbo(-155.0, V_GIRO);   
+  barrer();
+  avanzar(827, V_RECTO_MEDIO, 10.0);
+  //parabrisas(950, V_APROX);               // (550) V_RECTO_MEDIO
 
   detener(1.0);
 
