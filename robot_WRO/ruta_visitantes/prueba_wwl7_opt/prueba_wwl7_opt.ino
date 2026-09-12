@@ -1970,7 +1970,7 @@ void loop()
   cerrarGarra();
   recolectar(4);                                // 95 = PALA_VER_DESTINO: la levanta un poco
   // Si queda torcida en la garra, re-agarrarla como en prueba_wwl5_opt:
-  // retroceder(110, V_APROX, 4.0); abrirGarra(); avanzar(45, V_APROX, 2.5); cerrarGarra();
+  //retroceder(110, V_APROX, 4.0); abrirGarra(); avanzar(45, V_APROX, 2.5); cerrarGarra();
   retroceder(91, V_APROX, 4.0);                // (115 + 31)
 
   // ---- 3. Llevarla hasta la base y colocarla encima ----
@@ -1986,32 +1986,36 @@ void loop()
 
   // ---- 4. Barrer ----
   girarARumbo(-190.0, V_GIRO);                  // (der 25) era -115
-  avanzar(437, V_RECTO_RAPIDO, 4.0);                   // (227 a 207 rpm: la funcion vieja se pasaba
+  avanzar(447, V_RECTO_RAPIDO, 4.0);                   // (227 a 207 rpm: la funcion vieja se pasaba
                                                 //  al frenar; en wwl5_opt este tramo es 590)
   girarARumbo(-88.0, V_GIRO);                  // (der 75) era -190
-  avanzar(957, V_RECTO_RAPIDO, 4.0);
+  //barrer();
+  avanzar(1005, V_RECTO_RAPIDO, 4.0);
   girarARumbo(-175.0, V_GIRO_RAPIDO);
-  retroceder(320, V_GIRO_RAPIDO, 4.0);
+  retroceder(350, V_RECTO_RAPIDO, 4.0);
   //parabrisas(360, V_APROX); 
   //retroceder(300, V_RECTO_RAPIDO, 3.0);
   barrer();
-  avanzar(867, V_RECTO_MEDIO, 10.0);
-  recolectar(1);
+  avanzar(887, V_RECTO_MEDIO, 10.0);
+  recolectar(2);
+  retroceder(90, V_APROX, 1.5);
   //parabrisas(950, V_APROX);               // (550) V_RECTO_MEDIO
 
 
   // ---- 5. Regresar por la otra torre ----
-  retroceder(360, V_RECTO_RAPIDO, 3.0);
-  girarARumbo(75.0, V_GIRO_RAPIDO); 
-  avanzar(1115, V_RECTO_RAPIDO, 6.0);
+  retroceder(290, V_RECTO_RAPIDO, 3.0);
+  girarARumbo(70.0, V_GIRO_RAPIDO); 
+  avanzar(1320, V_RECTO_RAPIDO, 6.0);
   girarARumbo(90.0, V_GIRO); 
-  avanzar(1550, V_RECTO_RAPIDO, 6.0);
-  avanzarRectoGyroLineaPerpendicular(730, V_APROX, 10.0, 40, 2, V_APROX, 1.5f, 180);
-  avanzar(577, V_RECTO_MEDIO, 4.0);
-  girarARumbo(0.0, V_GIRO_FINO); 
-  avanzar(120, V_APROX, 3.0);
+  avanzar(1365, V_RECTO_RAPIDO, 6.0);
+  avanzarRectoGyroLineaPerpendicular(330, V_APROX, 10.0, 40, 2, V_APROX, 1.5f, 0);
+  avanzar(105, V_RECTO_MEDIO, 2.0);
+  girarARumbo(32.0, V_GIRO_RAPIDO); 
+  avanzar(199, V_RECTO_MEDIO, 4.0);
+  //girarARumbo(1.0, V_GIRO_FINO); 
+  
 
-  // ---- 6. Recoger la parte superior de la torre ----
+  // ---- 6. Recoger la parte superior de la segunda torre ----
   bajar_pala();                                 // 105: garra abierta a ras del suelo
   visionCentrar("TORRE_REC");                   // LA CAMARA gira el robot hasta tener la torre entre los dedos
   avanzar(visionDistancia(265), V_APROX, 5.0);  // (265) despacio para no tumbarla
@@ -2019,12 +2023,14 @@ void loop()
   recolectar(4);                                // 95 = PALA_VER_DESTINO: la levanta un poco
   // Si queda torcida en la garra, re-agarrarla como en prueba_wwl5_opt:
   // retroceder(110, V_APROX, 4.0); abrirGarra(); avanzar(45, V_APROX, 2.5); cerrarGarra();
-  retroceder(1591, V_RECTO_MEDIO, 4.0);                // (115 + 31)
+  retroceder(120, V_RECTO_MEDIO, 5.0);                // (115 + 31)
 
   // ---- 3. Llevarla hasta la base y colocarla encima ----
-  girarARumbo(-90.0, V_GIRO_FINO);              // a la derecha de como arranco (der 87 a 30 rpm)
+  girarARumbo(0.0, V_GIRO_FINO);              // a la derecha de como arranco (der 87 a 30 rpm)
+  retroceder(1300, V_RECTO_MEDIO, 5.0); 
+  girarARumbo(-90.0, V_GIRO); 
   // Se lleva BAJA (pala en 95): asi la camara ve la base por encima de la torre.
-  avanzar(1755, V_RECTO_RAPIDO, 10.0);          // (1450) hasta donde todavia se ve la base
+  avanzar(1605, V_RECTO_RAPIDO, 10.0);          // (1450) hasta donde todavia se ve la base
   visionCentrar("TORRE_DEST");                  // LA CAMARA corrige el rumbo mirando la base
   //long falta = visionDistancia(2246 - 1455);    // 2087 = tramo completo medido en wwl5_opt
   recolectar(1);                                // 63: la sube por encima de la base
