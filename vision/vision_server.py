@@ -276,7 +276,8 @@ class RegistroTelemetria:
 
 
 def arrancar_web(buffer_frame, telemetria, estado_global, puerto=8080,
-                 callback_modo=None, marcar_actividad=None, callback_ahorro=None):
+                 callback_modo=None, marcar_actividad=None, callback_ahorro=None,
+                 marcar_stream=None):
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
     from urllib.parse import parse_qs, urlparse
 
@@ -330,6 +331,14 @@ def arrancar_web(buffer_frame, telemetria, estado_global, puerto=8080,
                 self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
                 self.send_header("Access-Control-Allow-Origin", "*")
                 self.end_headers()
+                # Mientras haya un /stream abierto la camara NO se duerme. Hay
+                # que contarlos en vez de mirar el reloj: con red lenta
+                # wfile.write() se queda bloqueado varios segundos, la marca de
+                # actividad se queda vieja y la camara se dormia en mitad del
+                # video. El navegador se quedaba con la ultima imagen congelada
+                # y al desbloquearse la escritura, despertaba: saltos y desfase.
+                if marcar_stream:
+                    marcar_stream(1)
                 try:
                     while True:
                         if marcar_actividad:
@@ -345,6 +354,9 @@ def arrancar_web(buffer_frame, telemetria, estado_global, puerto=8080,
                         time.sleep(0.05)  # ~20 fps
                 except (BrokenPipeError, ConnectionResetError):
                     pass
+                finally:
+                    if marcar_stream:
+                        marcar_stream(-1)
 
             elif self.path == "/raw":
                 self.send_response(200)
@@ -504,17 +516,23 @@ def main():
     cfg_ahorro = cfg.get("ahorro", {})
     ahorro = {
         "habilitado": bool(cfg_ahorro.get("habilitado", True)),
-        "seg_sin_web": float(cfg_ahorro.get("segundos_sin_web", 5.0)),
+        "seg_sin_web": float(cfg_ahorro.get("segundos_sin_web", 15.0)),
         "seg_sin_megapi": float(cfg_ahorro.get("segundos_sin_megapi", 90.0)),
         "hz_dormida": float(cfg_ahorro.get("hz_dormida", 2.0)),
     }
     estado_global["ahorro"] = ahorro
     t_web = 0.0
     t_megapi = time.monotonic()
+    streams = {"n": 0}
+    estado_global["streams"] = 0
 
     def marcar_web():
         nonlocal t_web
         t_web = time.monotonic()
+
+    def marcar_stream(delta):
+        streams["n"] = max(0, streams["n"] + delta)
+        estado_global["streams"] = streams["n"]
 
     def set_ahorro(activo):
         ahorro["habilitado"] = bool(activo)
@@ -524,7 +542,7 @@ def main():
         buffer_frame = BufferFrame()
         arrancar_web(buffer_frame, telemetria, estado_global, puerto_web,
                      callback_modo=set_modo, marcar_actividad=marcar_web,
-                     callback_ahorro=set_ahorro)
+                     callback_ahorro=set_ahorro, marcar_stream=marcar_stream)
         log("servidor web y telemetria en http://<ip-de-la-pi>:%d" % puerto_web)
 
     fps = ContadorFPS()
@@ -541,7 +559,8 @@ def main():
 
             # ---- dormir o despertar la camara ---------------------------
             ahora_m = time.monotonic()
-            hay_web = (ahora_m - t_web) < ahorro["seg_sin_web"]
+            hay_web = (streams["n"] > 0
+                       or (ahora_m - t_web) < ahorro["seg_sin_web"])
             hay_megapi = (ahora_m - t_megapi) < ahorro["seg_sin_megapi"]
             debe_dormir = (ahorro["habilitado"] and modo == "PAUSA"
                            and not hay_web and not hay_megapi)
