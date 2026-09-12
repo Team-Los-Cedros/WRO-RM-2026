@@ -47,11 +47,19 @@ import sys
 import threading
 import time
 
+# Marca antes de cargar OpenCV. En una Pi 3B cargarlo desde la microSD tarda
+# varios segundos y es el grueso del arranque del servicio. time.monotonic()
+# cuenta desde que arranco el sistema, asi que estos numeros se comparan
+# directamente con los de "journalctl -o short-monotonic".
+_T_ANTES_IMPORTS = time.monotonic()
+
 import cv2
 
 from vision_core import (Camara, ContadorFPS, Deteccion, Detector,
                          GestorExclusividadCamara, cargar_config,
                          colores_disponibles, dibujar_overlay)
+
+_T_TRAS_IMPORTS = time.monotonic()
 
 VERSION = "3.0"
 
@@ -68,6 +76,7 @@ class EnlaceSerial:
         self._rx = ""
         self._proximo_intento = 0.0
         self._conectado_antes = False
+        self._aviso_espera = False
 
     def _resolver_puerto(self):
         puerto = self.cfg.get("puerto", "/dev/ttyUSB0")
@@ -83,28 +92,37 @@ class EnlaceSerial:
         puerto = self._resolver_puerto()
         baud = self.cfg.get("baudios", 115200)
 
-        if self.cfg.get("evitar_reset_dtr"):
-            # Sin togglear DTR la MegaPi NO se reinicia al abrir el puerto.
-            # Util si el Arduino ya esta a mitad de una rutina.
-            self.ser = serial.Serial()
-            self.ser.port = puerto
-            self.ser.baudrate = baud
-            self.ser.timeout = 0
-            self.ser.dtr = False
-            self.ser.rts = False
-            self.ser.open()
-        else:
-            self.ser = serial.Serial(puerto, baud, timeout=0)
-            espera = self.cfg.get("espera_reset_s", 2.5)
-            # Abrir el puerto USB resetea el ATmega2560. Hay que esperar a que
-            # arranque o los primeros mensajes se pierden.
-            self.log("esperando %.1fs el reinicio de la MegaPi..." % espera)
-            time.sleep(espera)
-            self.ser.reset_input_buffer()
+        try:
+            if self.cfg.get("evitar_reset_dtr"):
+                # Sin togglear DTR la MegaPi NO se reinicia al abrir el puerto.
+                # Util si el Arduino ya esta a mitad de una rutina.
+                self.ser = serial.Serial()
+                self.ser.port = puerto
+                self.ser.baudrate = baud
+                self.ser.timeout = 0
+                self.ser.dtr = False
+                self.ser.rts = False
+                self.ser.open()
+            else:
+                self.ser = serial.Serial(puerto, baud, timeout=0)
+                espera = self.cfg.get("espera_reset_s", 2.5)
+                # Abrir el puerto USB resetea el ATmega2560. Hay que esperar a que
+                # arranque o los primeros mensajes se pierden.
+                self.log("esperando %.1fs el reinicio de la MegaPi..." % espera)
+                time.sleep(espera)
+                self.ser.reset_input_buffer()
+        except Exception:
+            # Si no abrio hay que dejarlo en None. Si se queda aqui el objeto
+            # cerrado, el siguiente enviar() lanza "port is not open", se marca
+            # una desconexion y el ciclo se repite: una linea de log por segundo
+            # mientras la MegaPi este apagada, escribiendo en la SD sin parar.
+            self.ser = None
+            raise
 
         self.log("serial abierto en %s @ %d" % (puerto, baud))
         self._conectado_antes = True
         self._proximo_intento = 0.0
+        self._aviso_espera = False
         return self
 
     @property
@@ -132,6 +150,11 @@ class EnlaceSerial:
             return True
         except Exception as e:
             self._proximo_intento = time.monotonic() + self.cfg.get("reintento_s", 1.0)
+            # Se avisa una sola vez: con la MegaPi apagada esto se reintenta
+            # cada segundo y antes llenaba el journal.
+            if not self._aviso_espera:
+                self._aviso_espera = True
+                self.log("esperando a la MegaPi en %s (%s)" % (self._resolver_puerto(), e))
             return False
 
     def enviar(self, linea):
@@ -252,7 +275,8 @@ class RegistroTelemetria:
                 pass
 
 
-def arrancar_web(buffer_frame, telemetria, estado_global, puerto=8080, callback_modo=None):
+def arrancar_web(buffer_frame, telemetria, estado_global, puerto=8080,
+                 callback_modo=None, marcar_actividad=None, callback_ahorro=None):
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
     from urllib.parse import parse_qs, urlparse
 
@@ -276,12 +300,18 @@ def arrancar_web(buffer_frame, telemetria, estado_global, puerto=8080, callback_
               b"<a href='/modo?m=ARTEFACTO&c=AUTO' style='color:#38bdf8'>AUTO</a> | "
               b"<a href='/modo?m=TORRE_REC' style='color:#facc15;font-weight:bold'>TORRE_REC</a> | "
               b"<a href='/modo?m=TORRE_DEST' style='color:#f97316;font-weight:bold'>TORRE_DEST</a></div>"
+              b"<div style='margin-top:8px;'><span class='tag'>CAMARA</span> "
+              b"<span id='cam'>...</span> &nbsp;&nbsp; "
+              b"<a href='/ahorro?on=1' style='color:#4ade80'>ahorro ON</a> | "
+              b"<a href='/ahorro?on=0' style='color:#f87171'>siempre encendida</a></div>"
               b"<div id='logs'>Cargando telemetria en vivo...</div>"
               b"</div></div>"
               b"<script>"
               b"async function updateLogs(){try{let r=await fetch('/telemetria');let d=await r.json();let l=document.getElementById('logs');"
               b"if(d.items){l.innerHTML=d.items.slice(-12).reverse().map(e=>`[${e.t_iso.split('T')[1].slice(0,8)}] <b>${e.tipo.toUpperCase()}</b>: `+JSON.stringify(e)).join('<br>');}"
-              b"}catch(e){}setTimeout(updateLogs, 800);}updateLogs();"
+              b"let st=await (await fetch('/estado')).json();"
+              b"document.getElementById('cam').textContent=(st.camara?st.camara.estado:'?')+((st.ahorro&&st.ahorro.habilitado)?' | ahorro activo':' | ahorro apagado');"
+              b"}catch(err){}setTimeout(updateLogs, 800);}updateLogs();"
               b"</script></body></html>")
 
     class Handler(BaseHTTPRequestHandler):
@@ -289,6 +319,12 @@ def arrancar_web(buffer_frame, telemetria, estado_global, puerto=8080, callback_
             pass
 
         def do_GET(self):
+            # Cualquier visita cuenta como "hay alguien mirando". La pagina
+            # consulta /telemetria y /estado cada 800 ms, asi que mientras este
+            # abierta en un navegador la camara no se duerme y se puede ajustar
+            # el angulo con la imagen en vivo.
+            if marcar_actividad:
+                marcar_actividad()
             if self.path == "/stream":
                 self.send_response(200)
                 self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
@@ -296,6 +332,8 @@ def arrancar_web(buffer_frame, telemetria, estado_global, puerto=8080, callback_
                 self.end_headers()
                 try:
                     while True:
+                        if marcar_actividad:
+                            marcar_actividad()
                         jpeg = buffer_frame.get()
                         if jpeg is None:
                             time.sleep(0.04)
@@ -323,6 +361,19 @@ def arrancar_web(buffer_frame, telemetria, estado_global, puerto=8080, callback_
                 c = qs.get("c", [None])[0]
                 if m and callback_modo:
                     callback_modo(m, c)
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                self.wfile.write(json.dumps(estado_global, ensure_ascii=False).encode("utf-8"))
+
+            elif self.path.startswith("/ahorro"):
+                # Interruptor de emergencia: /ahorro?on=0 deja la camara
+                # encendida siempre hasta que se reinicie el servicio.
+                qs = parse_qs(urlparse(self.path).query)
+                on = qs.get("on", [None])[0]
+                if on is not None and callback_ahorro:
+                    callback_ahorro(on not in ("0", "false", "no"))
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Access-Control-Allow-Origin", "*")
@@ -385,6 +436,9 @@ def main():
     def log(msg):
         print("[vision] %s" % msg, flush=True)
 
+    log("arranque: OpenCV cargado en %.1f s (listo a los %.1f s de encender)"
+        % (_T_TRAS_IMPORTS - _T_ANTES_IMPORTS, _T_TRAS_IMPORTS))
+
     cfg = cargar_config(args.config)
     disponibles = colores_disponibles(cfg)
     color = (args.color or cfg["deteccion"].get("color_inicial", disponibles[0])).upper()
@@ -401,9 +455,10 @@ def main():
     gestor = GestorExclusividadCamara(nombre_script="vision_server.py", gestionar_servicio=False)
     gestor.adquirir()
     
+    _t_cam = time.monotonic()
     cam = Camara(cfg["camara"]).abrir()
-    log("camara %dx%d abierta, modo %s %s" %
-        (cam.ancho, cam.alto, modo, color))
+    log("camara %dx%d abierta en %.1f s, modo %s %s" %
+        (cam.ancho, cam.alto, time.monotonic() - _t_cam, modo, color))
 
     enlace = None
     if cfg["serial"].get("habilitado", True) and not args.sin_serial:
@@ -439,9 +494,37 @@ def main():
         estado_global["color_actual"] = color
         log("modo cambiado -> %s %s" % (modo, color))
 
+    # ---- Ahorro de energia -------------------------------------------------
+    # La camara se suelta cuando no la necesita nadie: sin nadie en la web y con
+    # la MegaPi callada. Despierta con cualquier cosa que mande la MegaPi (al
+    # pulsar el boton de inicio manda "P") y con cualquier visita a la web.
+    # segundos_sin_megapi es deliberadamente largo: durante una ronda pueden
+    # pasar decenas de segundos entre un comando y el siguiente, y la camara NO
+    # debe dormirse en mitad de la carrera.
+    cfg_ahorro = cfg.get("ahorro", {})
+    ahorro = {
+        "habilitado": bool(cfg_ahorro.get("habilitado", True)),
+        "seg_sin_web": float(cfg_ahorro.get("segundos_sin_web", 5.0)),
+        "seg_sin_megapi": float(cfg_ahorro.get("segundos_sin_megapi", 90.0)),
+        "hz_dormida": float(cfg_ahorro.get("hz_dormida", 2.0)),
+    }
+    estado_global["ahorro"] = ahorro
+    t_web = 0.0
+    t_megapi = time.monotonic()
+
+    def marcar_web():
+        nonlocal t_web
+        t_web = time.monotonic()
+
+    def set_ahorro(activo):
+        ahorro["habilitado"] = bool(activo)
+        log("ahorro de camara %s" % ("ACTIVADO" if activo else "DESACTIVADO"))
+
     if habilitar_web:
         buffer_frame = BufferFrame()
-        arrancar_web(buffer_frame, telemetria, estado_global, puerto_web, callback_modo=set_modo)
+        arrancar_web(buffer_frame, telemetria, estado_global, puerto_web,
+                     callback_modo=set_modo, marcar_actividad=marcar_web,
+                     callback_ahorro=set_ahorro)
         log("servidor web y telemetria en http://<ip-de-la-pi>:%d" % puerto_web)
 
     fps = ContadorFPS()
@@ -456,7 +539,24 @@ def main():
                 enlace.asegurar_conectado()
                 estado_global["serial_conectado"] = enlace.conectado
 
-            frame = cam.leer(solo_nuevos=True, timeout=0.5)
+            # ---- dormir o despertar la camara ---------------------------
+            ahora_m = time.monotonic()
+            hay_web = (ahora_m - t_web) < ahorro["seg_sin_web"]
+            hay_megapi = (ahora_m - t_megapi) < ahorro["seg_sin_megapi"]
+            debe_dormir = (ahorro["habilitado"] and modo == "PAUSA"
+                           and not hay_web and not hay_megapi)
+            if debe_dormir and not cam.dormida:
+                log("camara dormida (nadie en la web y la MegaPi lleva %.0f s callada)"
+                    % ahorro["seg_sin_megapi"])
+                cam.dormir()
+            elif not debe_dormir and cam.dormida:
+                log("camara despierta")
+                cam.despertar()
+            durmiendo = cam.dormida
+
+            # Dormida, el bucle corre a ~20 Hz solo para atender el serial: asi
+            # el "P" del boton de inicio se contesta en menos de 50 ms.
+            frame = cam.leer(solo_nuevos=True, timeout=0.05 if durmiendo else 0.5)
             det = Deteccion()
             color_detectado = "NINGUNO"
             roi_y0 = 0
@@ -490,7 +590,8 @@ def main():
             estado_global["camara"] = cam.estado()
 
             ahora = time.time()
-            if enviando and (ahora - ultimo_envio) >= periodo_envio:
+            periodo = (1.0 / ahorro["hz_dormida"]) if durmiendo else periodo_envio
+            if enviando and (ahora - ultimo_envio) >= periodo:
                 ultimo_envio = ahora
                 trama = "T %d %s %d %d %d %d %d %d" % (
                     1 if det.encontrado else 0, color_detectado,
@@ -501,22 +602,31 @@ def main():
                 if args.verbose or enlace is None:
                     print(trama, flush=True)
 
-                # Registrar telemetria de vision
-                telemetria.registrar("vision", {
-                    "found": 1 if det.encontrado else 0,
-                    "modo": modo,
-                    "color": color_detectado,
-                    "ex": det.ex,
-                    "ey": det.ey,
-                    "area": det.area,
-                    "dist_mm": det.dist_mm,
-                    "fps": int(f),
-                    "confianza": det.confianza
-                })
+                # Registrar telemetria de vision. Dormida no se escribe nada:
+                # asi la SD queda quieta mientras se espera y cortar la
+                # corriente con el suiche es mucho menos arriesgado.
+                if not durmiendo:
+                    telemetria.registrar("vision", {
+                        "found": 1 if det.encontrado else 0,
+                        "modo": modo,
+                        "color": color_detectado,
+                        "ex": det.ex,
+                        "ey": det.ey,
+                        "area": det.area,
+                        "dist_mm": det.dist_mm,
+                        "fps": int(f),
+                        "confianza": det.confianza
+                    })
 
             # Comandos y logs que llegan de la MegaPi
             if enlace:
                 for linea in enlace.leer_lineas():
+                    # Cualquier cosa que mande la MegaPi despierta la camara. Al
+                    # pulsar el boton de inicio manda "P", varios segundos antes
+                    # del primer visionCentrar(), asi da tiempo a reabrirla.
+                    t_megapi = time.monotonic()
+                    if cam.dormida:
+                        cam.despertar()
                     if linea.startswith("#"):
                         msg_mega = linea[1:].strip()
                         log("MegaPi: %s" % msg_mega)
@@ -563,11 +673,14 @@ def main():
                             len(fila), "" if not fila else " " +
                             " ".join(d.color for d in fila)))
                     elif cmd == "X":
+                        # Si la camara aun esta despertando no hay frame: se
+                        # contesta vacio en vez de tumbar el servidor.
                         partes_resp = []
-                        for c in disponibles:
-                            dc, _, _ = detector.detectar(frame, c)
-                            partes_resp.append("%s %d %d %d" % (
-                                c, 1 if dc.encontrado else 0, dc.ex, dc.dist_mm))
+                        if frame is not None:
+                            for c in disponibles:
+                                dc, _, _ = detector.detectar(frame, c)
+                                partes_resp.append("%s %d %d %d" % (
+                                    c, 1 if dc.encontrado else 0, dc.ex, dc.dist_mm))
                         enlace.enviar("X " + " ".join(partes_resp))
                     elif cmd == "S" and len(partes) >= 2:
                         enviando = partes[1] != "0"

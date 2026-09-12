@@ -1,6 +1,18 @@
 [Unit]
 Description=Vision WRO RoboMission (Raspberry Pi -> MegaPi)
-After=multi-user.target
+# Arranca en cuanto los discos estan montados, SIN esperar al resto del
+# arranque. Medido en la Pi del robot el 11-09-2026 con
+#   systemd-analyze critical-chain wro-vision.service
+# con "After=multi-user.target" el servicio arrancaba en el segundo 27,2:
+# esperaba a cloud-init (8 s), a NetworkManager (7,3 s) y a ssh. Nada de eso
+# hace falta para ver por la camara. Con esto arranca sobre el segundo 10.
+# La red, el ssh y la web siguen subiendo igual que antes: no se toca nada del
+# sistema, solo se deja de esperarlos.
+DefaultDependencies=no
+Wants=local-fs.target
+After=local-fs.target
+Conflicts=shutdown.target
+Before=shutdown.target
 
 [Service]
 Type=simple
@@ -8,9 +20,11 @@ User=pi
 WorkingDirectory=/home/pi/WRO-RM-2026/vision
 ExecStart=/usr/bin/python3 /home/pi/WRO-RM-2026/vision/vision_server.py
 Restart=always
-RestartSec=3
-# Si la camara o la MegaPi tardan en enumerarse tras el arranque, el Restart
-# se encarga. Nice negativo para que el bucle de vision no lo desplace nada.
+RestartSec=1
+# Si la camara o la MegaPi tardan en enumerarse, el servidor las reintenta solo
+# (vision_core.Camara.abrir ya no lanza excepcion), asi no se pierde tiempo
+# reimportando OpenCV en cada reinicio. Nice negativo para que el bucle de
+# vision no lo desplace nada.
 Nice=-5
 
 [Install]

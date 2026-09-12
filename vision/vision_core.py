@@ -216,6 +216,8 @@ class Camara:
         self._estado = "CERRADA"
         self._ultimo_error = ""
         self._reconexiones = 0
+        self._dormida = False
+        self._vuelve_de_sueno = False
 
     def _crear_captura(self):
         self.dispositivo = resolver_dispositivo_video(self.cfg)
@@ -232,34 +234,85 @@ class Camara:
         cap.set(cv2.CAP_PROP_BUFFERSIZE, self.cfg.get("buffers", 3))
         return cap
 
-    def abrir(self):
-        self.cap = self._crear_captura()
-        self._estado = "ABRIENDO"
+    def abrir(self, espera_s=None):
+        """Abre la camara sin tumbar el proceso si todavia no esta enumerada.
 
-        # Primero se estabiliza el stream. Varias camaras UVC ignoran o
-        # reinician controles si se aplican antes del primer frame.
-        for _ in range(3):
-            self.cap.read()
+        Cuando el servicio arranca a la vez que el sistema puede ganarle la
+        carrera al USB. Antes eso lanzaba una excepcion, systemd reiniciaba el
+        servicio y habia que volver a importar OpenCV (varios segundos en una
+        Pi 3B). Ahora se reintenta aqui y, si aun asi no aparece, se deja al
+        hilo de captura reintentando solo.
+        """
+        limite = self.cfg.get("espera_inicial_s", 5.0) if espera_s is None else espera_s
+        t0 = time.time()
+        while True:
+            try:
+                self.cap = self._crear_captura()
+                break
+            except Exception as e:
+                self.cap = None
+                self._ultimo_error = str(e)
+                if time.time() - t0 >= limite:
+                    break
+                time.sleep(0.3)
 
-        self._aplicar_controles_v4l2(self.dispositivo)
+        if self.cap is not None:
+            self._estado = "ABRIENDO"
+            # Primero se estabiliza el stream. Varias camaras UVC ignoran o
+            # reinician controles si se aplican antes del primer frame.
+            for _ in range(3):
+                self.cap.read()
+            self._aplicar_controles_v4l2(self.dispositivo)
+        else:
+            self._estado = "RECONECTANDO"
 
         self._corriendo = True
         self._hilo = threading.Thread(target=self._bucle_captura, daemon=True)
         self._hilo.start()
 
-        # Esperar al primer frame para que quien nos llame no reciba None.
-        t0 = time.time()
-        while self._frame is None and time.time() - t0 < 5.0:
-            time.sleep(0.02)
-        if self._frame is None:
-            raise RuntimeError("La camara no entrego ningun frame en 5 s")
-        self._estado = "CONECTADA"
+        # Esperar al primer frame para que quien nos llame no reciba None. Si
+        # ni siquiera se pudo abrir el dispositivo no se espera: se sigue
+        # arrancando (serial, web) y el hilo la engancha cuando aparezca.
+        if self.cap is not None:
+            t1 = time.time()
+            while self._frame is None and time.time() - t1 < 5.0:
+                time.sleep(0.02)
+        self._estado = "CONECTADA" if self._frame is not None else "RECONECTANDO"
         return self
+
+    def dormir(self):
+        """Suelta la camara pero deja vivo el hilo de captura.
+
+        Sin streaming el sensor USB deja de consumir y la Pi deja de decodificar
+        MJPG: ahi esta casi todo el ahorro de energia mientras se espera.
+        """
+        self._dormida = True
+
+    def despertar(self):
+        """Vuelve a abrirla. Tarda entre 1 y 2 s en entregar el primer frame."""
+        self._dormida = False
+
+    @property
+    def dormida(self):
+        return self._dormida
 
     def _bucle_captura(self):
         fallos = 0
         try:
             while self._corriendo:
+                if self._dormida:
+                    if self.cap is not None:
+                        try:
+                            self.cap.release()
+                        except Exception:
+                            pass
+                        self.cap = None
+                        with self._lock:
+                            self._frame = None
+                        self._vuelve_de_sueno = True
+                        self._estado = "DORMIDA"
+                    time.sleep(0.1)
+                    continue
                 if self.cap is None or not self.cap.isOpened():
                     self._estado = "RECONECTANDO"
                     try:
@@ -272,7 +325,10 @@ class Camara:
                         if not ok:
                             raise RuntimeError("sin frames tras reabrir")
                         self._aplicar_controles_v4l2(self.dispositivo)
-                        self._reconexiones += 1
+                        if self._vuelve_de_sueno:
+                            self._vuelve_de_sueno = False   # despertar no es averia
+                        else:
+                            self._reconexiones += 1
                         self._ultimo_error = ""
                         self._estado = "CONECTADA"
                         fallos = 0
@@ -497,6 +553,7 @@ class Camara:
     def estado(self):
         return {
             "estado": self._estado,
+            "dormida": self._dormida,
             "dispositivo": self.dispositivo,
             "reconexiones": self._reconexiones,
             "ultimo_error": self._ultimo_error,
