@@ -2044,7 +2044,7 @@ void loop()
   colocarSobreBase();                           // baja despacio, suelta, retrocede recto y sube la pala
   visionPausar();
 
-  // ---- 8. Ir por visitantes ----
+  // ---- 8. Ir por visitantes (colores no aleatorios) ----
   girarARumbo(35.0, V_GIRO_RAPIDO);
   recolectar(2);
   avanzar(295, V_RECTO_RAPIDO, 2.75);
@@ -2056,10 +2056,58 @@ void loop()
   avanzar(460, V_RECTO_RAPIDO, 3.0);
   girarARumbo(180.0, V_GIRO);
   recolectar(1);
-  avanzar(290, V_RECTO_RAPIDO, 3.0);
+  avanzar(290, V_RECTO_MEDIO, 3.0);
   recolectar(2);
   retroceder(400, V_RECTO, 5.0); 
   girarARumbo(-90.0, V_GIRO);
+
+  //girarIzquierdaGyro(84.0, V_GIRO);
+  avanzar(1157, V_RECTO_RAPIDO, 7.0);
+  _delay(0.3);
+  avanzarRectoGyroLineaPerpendicular(730, V_RECTO_MEDIO, 12.0, 90, 4);
+  _delay(0.3);
+
+  girarIzquierdaGyro(175.0, V_GIRO_RAPIDO);
+  avanzar(205, V_RECTO_MEDIO, 4.0);
+  recolectar(1);
+
+  // Separar el rojo
+  retroceder(200, V_APROX, 4.0);
+  girarDerechaGyro(30.0, V_GIRO_FINO);
+  avanzar(366, V_RECTO_MEDIO, 5.0);
+  recolectar(2);
+  girarDerechaGyro(50.0, V_GIRO);
+
+  // Empujar a la zona
+  avanzar(810, V_RECTO, 5.0);
+  recolectar(1);
+  avanzar(55, V_APROX, 2.5);
+  retroceder(750, V_RECTO, 5.0);
+
+  // Voltear hacia el verde  (este era el giro que fallaba al cruzar el +-180)
+  recolectar(2);
+  girarIzquierdaGyro(160.0, V_GIRO_RAPIDO);
+  avanzar(505, V_RECTO, 4.0);
+
+  // Acomodar el verde si queda fuera
+  recolectar(3);
+  servoGarra2.write(GARRA_CERRADA_S2);
+  girarIzquierdaGyro(35.0, V_GIRO_FINO);
+  abrirGarra();
+  avanzar(45, V_APROX, 2.5);
+
+  // ---- TORRES AMARILLAS ----
+  retroceder(100, V_APROX, 2.5);
+  retroceder(870, V_RECTO_RAPIDO, 5.0);
+  girarDerechaGyro(99.0, V_GIRO);
+  _delay(0.3);
+  girarDerechaGyro(5.0, V_GIRO_FINO);
+  recolectar(1);
+
+  // Ir y centrar en linea
+  avanzar(160, V_RECTO, 3.5);
+  _delay(0.3);
+  avanzarRectoGyroLineaPerpendicular(390, V_RECTO_MEDIO, 12.0, 40, 2, 40, 0, 0);
 
   detener(1.0);
 
